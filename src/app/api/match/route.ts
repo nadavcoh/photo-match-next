@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { PoolClient } from 'pg'
 import { withClient } from '@/lib/db'
+import { thumbnailUrl } from '@/lib/thumbnails'
 import type {
   WAItem,
   HashCandidate,
@@ -61,7 +62,7 @@ async function fetchHashesCandidates(
         timestamp: isoOrNull(r.timestamp), url: r.url, size: r.size,
         filesize: r.filesize, origin: r.origin, duration: r.duration,
         hamming: r.hamming, thumb_hamming: null,
-        thumbnail_url: `/api/thumbnail/hashes/${r.id}`, source: 'hashes',
+        thumbnail_url: thumbnailUrl('hashes', r.id), source: 'hashes',
       }))
   }
 
@@ -103,7 +104,7 @@ async function fetchHashesCandidates(
       timestamp: isoOrNull(r.timestamp), url: r.url, size: r.size,
       filesize: r.filesize, origin: r.origin, duration: r.duration,
       hamming: r.hash_hamming, thumb_hamming: r.thumb_hamming,
-      thumbnail_url: `/api/thumbnail/hashes/${r.id}`, source: 'hashes',
+      thumbnail_url: thumbnailUrl('hashes', r.id), source: 'hashes',
     }))
 }
 
@@ -134,7 +135,7 @@ async function fetchPartnerCandidates(
         id: r.id, filename: r.filename ?? '', timestamp: isoOrNull(r.timestamp),
         url: r.url, size: r.size, duration: r.duration,
         hamming: r.hamming, thumb_hamming: null,
-        thumbnail_url: `/api/thumbnail/partner/${r.id}`, source: 'partner',
+        thumbnail_url: thumbnailUrl('partner', r.id), source: 'partner',
       }))
   }
 
@@ -174,7 +175,7 @@ async function fetchPartnerCandidates(
       id: r.id, filename: r.filename ?? '', timestamp: isoOrNull(r.timestamp),
       url: r.url, size: r.size, duration: r.duration,
       hamming: r.hash_hamming, thumb_hamming: r.thumb_hamming,
-      thumbnail_url: `/api/thumbnail/partner/${r.id}`, source: 'partner',
+      thumbnail_url: thumbnailUrl('partner', r.id), source: 'partner',
     }))
 }
 
@@ -261,7 +262,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       const waItem: WAItem = {
         id: waRow.id, filename: waRow.filename ?? '', filetype: waRow.filetype ?? '',
         hash_bit: waRow.hash_bit, video_thumb_hash_bit: waRow.video_thumb_hash_bit,
-        timestamp: isoOrNull(waRow.timestamp), thumbnail_url: `/api/thumbnail/wa/${waRow.id}`,
+        timestamp: isoOrNull(waRow.timestamp), thumbnail_url: thumbnailUrl('wa', waRow.id),
       }
 
       const isVideo = isVideoFiletype(waItem.filetype)
