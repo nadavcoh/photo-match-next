@@ -6,17 +6,27 @@ declare global {
   var _pgPool: Pool | undefined
 }
 
+function getConnectionString(): string {
+  // Supabase Vercel integration sets POSTGRES_URL (pooled via PgBouncer).
+  // Fall back to DATABASE_URL for local dev / manual configuration.
+  const url =
+    process.env.POSTGRES_URL ??
+    process.env.DATABASE_URL
+
+  if (!url) {
+    throw new Error(
+      'No database URL found. Set POSTGRES_URL (Supabase Vercel integration) ' +
+      'or DATABASE_URL in your environment variables.'
+    )
+  }
+  return url
+}
+
 export function getPool(): Pool {
   if (!global._pgPool) {
-    const url = process.env.DATABASE_URL
-    if (!url) throw new Error('DATABASE_URL environment variable is not set')
-
     global._pgPool = new Pool({
-      connectionString: url,
-      ssl:
-        process.env.NODE_ENV === 'production'
-          ? { rejectUnauthorized: false }
-          : false,
+      connectionString: getConnectionString(),
+      ssl: { rejectUnauthorized: false },
       max: 10,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 5_000,

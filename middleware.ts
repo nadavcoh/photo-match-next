@@ -6,7 +6,7 @@ export function middleware(request: NextRequest): NextResponse {
   // Pass through Next.js internals and static assets
   if (
     pathname.startsWith('/_next/') ||
-    pathname.startsWith('/favicon.ico') ||
+    pathname === '/favicon.ico' ||
     pathname.startsWith('/icons/')
   ) {
     return NextResponse.next()
@@ -15,60 +15,55 @@ export function middleware(request: NextRequest): NextResponse {
   const configuredUser = process.env.BASIC_AUTH_USER
   const configuredPass = process.env.BASIC_AUTH_PASSWORD
 
-  // If credentials are not configured, block all access rather than allowing
-  // unrestricted entry — fail closed, never open.
+  // Fail CLOSED: if credentials are not configured, block all access.
+  // Never fall through to an unprotected app.
   if (!configuredUser || !configuredPass) {
     return new NextResponse(
-      'Service Unavailable: BASIC_AUTH_USER and BASIC_AUTH_PASSWORD must be set.',
-      { status: 503, headers: { 'Content-Type': 'text/plain' } }
+      'Service unavailable: BASIC_AUTH_USER and BASIC_AUTH_PASSWORD must be configured.',
+      {
+        status: 503,
+        headers: { 'Content-Type': 'text/plain' },
+      }
     )
   }
 
   const authHeader = request.headers.get('authorization')
 
   if (!authHeader?.startsWith('Basic ')) {
-    return new NextResponse('Unauthorized', {
-      status: 401,
-      headers: { 'WWW-Authenticate': 'Basic realm="Photo Match", charset="UTF-8"' },
-    })
+    return unauthorized()
   }
 
+  // Use atob() — available in Edge Runtime. Buffer is Node-only and
+  // throws silently in middleware, which would let requests through.
   let decoded: string
   try {
-    decoded = Buffer.from(authHeader.slice(6), 'base64').toString('utf-8')
+    decoded = atob(authHeader.slice(6))
   } catch {
-    return new NextResponse('Unauthorized', {
-      status: 401,
-      headers: { 'WWW-Authenticate': 'Basic realm="Photo Match", charset="UTF-8"' },
-    })
+    return unauthorized()
   }
 
   const colonIdx = decoded.indexOf(':')
-  if (colonIdx === -1) {
-    return new NextResponse('Unauthorized', {
-      status: 401,
-      headers: { 'WWW-Authenticate': 'Basic realm="Photo Match", charset="UTF-8"' },
-    })
-  }
+  if (colonIdx === -1) return unauthorized()
 
   const inputUser = decoded.slice(0, colonIdx)
   const inputPass = decoded.slice(colonIdx + 1)
 
-  // Constant-time comparison to resist timing attacks
-  const userMatch = timingSafeEqual(inputUser, configuredUser)
-  const passMatch = timingSafeEqual(inputPass, configuredPass)
-
-  if (!userMatch || !passMatch) {
-    return new NextResponse('Unauthorized', {
-      status: 401,
-      headers: { 'WWW-Authenticate': 'Basic realm="Photo Match", charset="UTF-8"' },
-    })
+  // XOR constant-time comparison to resist timing attacks
+  if (!timingSafeEqual(inputUser, configuredUser) || !timingSafeEqual(inputPass, configuredPass)) {
+    return unauthorized()
   }
 
   return NextResponse.next()
 }
 
-/** XOR-based constant-time string equality (avoids early-exit timing leaks). */
+function unauthorized(): NextResponse {
+  return new NextResponse('Unauthorized', {
+    status: 401,
+    headers: { 'WWW-Authenticate': 'Basic realm="Photo Match", charset="UTF-8"' },
+  })
+}
+
+/** XOR-based constant-time string equality — avoids early-exit timing leaks. */
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false
   let diff = 0
