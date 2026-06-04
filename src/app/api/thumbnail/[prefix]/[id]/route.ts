@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { thumbnailUrl, ThumbnailPrefix } from '@/lib/thumbnails'
+import { thumbnailStoragePath, ThumbnailPrefix } from '@/lib/thumbnails'
 
 const VALID_PREFIXES = new Set<ThumbnailPrefix>(['wa', 'hashes', 'partner'])
 
@@ -19,17 +19,24 @@ export async function GET(_request: NextRequest, { params }: Params): Promise<Ne
     return NextResponse.json({ error: 'Invalid id' }, { status: 400 })
   }
 
-  try {
-    const url = thumbnailUrl(prefix as ThumbnailPrefix, id)
-    return NextResponse.redirect(url, {
-      status: 302,
-      headers: {
-        // Let the browser cache the redirect for one hour
-        'Cache-Control': 'public, max-age=3600',
-      },
-    })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error'
-    return NextResponse.json({ error: message }, { status: 500 })
+  // Build the CDN URL directly — never call thumbnailUrl() here.
+  // thumbnailUrl() falls back to /api/thumbnail/... when SUPABASE_URL is unset,
+  // which would redirect back to this same route and cause an infinite loop.
+  const supabaseUrl = (process.env.SUPABASE_URL ?? '').trim()
+  if (!supabaseUrl) {
+    return NextResponse.json(
+      { error: 'SUPABASE_URL is not configured — cannot resolve thumbnail' },
+      { status: 503 }
+    )
   }
+
+  const path = thumbnailStoragePath(prefix as ThumbnailPrefix, id)
+  const url = `${supabaseUrl}/storage/v1/object/public/thumbnails/${path}`
+  return NextResponse.redirect(url, {
+    status: 302,
+    headers: {
+      // Let the browser cache the redirect for one hour
+      'Cache-Control': 'public, max-age=3600',
+    },
+  })
 }

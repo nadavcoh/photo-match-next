@@ -16,11 +16,10 @@ export function middleware(request: NextRequest): NextResponse {
   const configuredUser = (process.env.BASIC_AUTH_USER ?? '').trim()
   const configuredPass = (process.env.BASIC_AUTH_PASSWORD ?? '').trim()
 
-  // Credentials not configured → return 401 so the browser shows its native
-  // login prompt (a 503 body renders as a page, making the site appear "open").
-  // No valid credentials exist in this state, so all attempts will fail.
+  // Credentials not configured → site is publicly accessible.
+  // Authentication is opt-in: set both env vars to enable the password prompt.
   if (!configuredUser || !configuredPass) {
-    return deny()
+    return NextResponse.next()
   }
 
   const authHeader = request.headers.get('authorization')
