@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { thumbnailPublicUrl, ThumbnailPrefix } from '@/lib/thumbnails'
+import { thumbnailUrl, ThumbnailPrefix } from '@/lib/thumbnails'
 
 const VALID_PREFIXES = new Set<ThumbnailPrefix>(['wa', 'hashes', 'partner'])
 
@@ -20,7 +20,7 @@ export async function GET(_request: NextRequest, { params }: Params): Promise<Ne
   }
 
   try {
-    const url = thumbnailPublicUrl(prefix as ThumbnailPrefix, id)
+    const url = thumbnailUrl(prefix as ThumbnailPrefix, id)
     return NextResponse.redirect(url, {
       status: 302,
       headers: {
