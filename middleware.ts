@@ -16,10 +16,11 @@ export function middleware(request: NextRequest): NextResponse {
   const configuredUser = (process.env.BASIC_AUTH_USER ?? '').trim()
   const configuredPass = (process.env.BASIC_AUTH_PASSWORD ?? '').trim()
 
-  // Credentials not configured → site is publicly accessible.
-  // Authentication is opt-in: set both env vars to enable the password prompt.
+  // Credentials not configured → lock the site entirely.
+  // A partial or missing configuration has no valid credentials, so every
+  // request must be denied until both vars are set.
   if (!configuredUser || !configuredPass) {
-    return NextResponse.next()
+    return deny()
   }
 
   const authHeader = request.headers.get('authorization')
@@ -50,7 +51,11 @@ export function middleware(request: NextRequest): NextResponse {
 function deny(): NextResponse {
   return new NextResponse('Unauthorized', {
     status: 401,
-    headers: { 'WWW-Authenticate': 'Basic realm="Photo Match", charset="UTF-8"' },
+    headers: {
+      'WWW-Authenticate': 'Basic realm="Photo Match", charset="UTF-8"',
+      // Prevent CDN/proxy from caching this response and serving it later.
+      'Cache-Control': 'no-store',
+    },
   })
 }
 
@@ -63,8 +68,8 @@ function timingSafeEqual(a: string, b: string): boolean {
 }
 
 export const config = {
-  // Matches all paths. Static-asset exclusions are handled inside the function
-  // so there is no risk of the regex failing to compile and silently allowing
-  // all traffic through.
-  matcher: '/:path*',
+  // '/(.*)'  is a plain regex that reliably matches every path including '/'.
+  // '/:path*' (Next.js path pattern) can silently miss the root in some
+  // Next.js versions, leaving the home page unprotected.
+  matcher: '/(.*)',
 }

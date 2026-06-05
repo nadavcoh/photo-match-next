@@ -105,6 +105,53 @@ function SmallBadge({ children, style, variant }: BadgeProps): JSX.Element {
   )
 }
 
+// ── SignedImage ────────────────────────────────────────────────────────────────
+//
+// The storage bucket is private. This component fetches a short-lived signed
+// URL from our server-side API route, then renders the image from that URL.
+// It never exposes the Service Role Key — that lives only in the route handler.
+
+function SignedImage({ apiPath, style }: { apiPath: string; style?: CSSProperties }): JSX.Element {
+  const [src, setSrc]       = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setSrc(null)
+    setFailed(false)
+
+    fetch(apiPath)
+      .then((r) => (r.ok ? (r.json() as Promise<{ signedUrl: string }>) : Promise.reject(r.status)))
+      .then((data) => { if (!cancelled) setSrc(data.signedUrl) })
+      .catch(() => { if (!cancelled) setFailed(true) })
+
+    return () => { cancelled = true }
+  }, [apiPath])
+
+  if (failed) {
+    return (
+      <div style={{ ...style, background: 'var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: 'var(--muted)' }}>
+        🖼️
+      </div>
+    )
+  }
+
+  if (!src) {
+    // Blank placeholder while the signed URL is being fetched
+    return <div style={{ ...style, background: 'var(--border)' }} />
+  }
+
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      style={style}
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
 // ── CandidateCard ─────────────────────────────────────────────────────────────
 
 interface CandidateCardProps {
@@ -112,18 +159,19 @@ interface CandidateCardProps {
   isSelected: boolean
   isAuto: boolean
   isPartnerOnly: boolean
-  onClick: () => void
+  // No onClick prop — clicks are handled by the wrapper div in the parent and
+  // bubble naturally. Having onClick here AND on the wrapper caused every tap
+  // to call handleCandidateClick twice, toggling the selection back immediately.
 }
 
-function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, onClick }: CandidateCardProps): JSX.Element {
-  const [imgError, setImgError] = useState(false)
+function CandidateCard({ c, isSelected, isAuto, isPartnerOnly }: CandidateCardProps): JSX.Element {
   const hDist = c.hamming
   const tDist = c.thumb_hamming
   const hVariant = hammingClass(hDist)
   const isPartner = c.source === 'partner'
 
   return (
-    <div onClick={isPartnerOnly ? undefined : onClick} style={{
+    <div style={{
       background: 'var(--surface)',
       border: `2px solid ${isSelected ? 'var(--green)' : isAuto ? 'var(--yellow)' : 'var(--border)'}`,
       borderRadius: 'var(--radius)', overflow: 'hidden',
@@ -147,18 +195,10 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, onClick }: Candid
           fontSize: '.75rem', fontWeight: 700, zIndex: 1,
         }}>✓</div>
       )}
-      {imgError ? (
-        <div style={{
-          width: '100%', aspectRatio: '1', background: 'var(--border)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: '2rem', color: 'var(--muted)',
-        }}>🖼️</div>
-      ) : (
-        <img src={c.thumbnail_url} alt="candidate" loading="lazy"
-          onError={() => setImgError(true)}
-          style={{ width: '100%', aspectRatio: '1', objectFit: 'contain', background: 'var(--border)', display: 'block' }}
-        />
-      )}
+      <SignedImage
+        apiPath={c.thumbnail_url}
+        style={{ width: '100%', aspectRatio: '1', objectFit: 'contain', background: 'var(--border)', display: 'block' }}
+      />
       <div style={{ padding: 8 }}>
         <div style={{ fontSize: '.7rem', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginBottom: 4 }}>
           {c.filename || ''}
@@ -312,7 +352,6 @@ interface WAItemCardProps {
 }
 
 function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoing }: WAItemCardProps): JSX.Element {
-  const [thumbError, setThumbError] = useState(false)
   const filetype = item.filetype ?? ''
   const isVideo = filetype.toLowerCase().includes('video')
   const isImage = filetype.toLowerCase().includes('image')
@@ -329,13 +368,10 @@ function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoi
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden', marginBottom: 16 }}>
       <div style={{ display: 'flex', gap: 12, padding: 12 }}>
-        {thumbError ? (
-          <div style={{ width: 128, height: 128, borderRadius: 10, background: 'var(--border)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: 'var(--muted)' }}>🖼️</div>
-        ) : (
-          <img src={item.thumbnail_url} alt="thumbnail" loading="lazy" onError={() => setThumbError(true)}
-            style={{ width: 128, height: 128, objectFit: 'contain', borderRadius: 10, flexShrink: 0, background: 'var(--border)' }}
-          />
-        )}
+        <SignedImage
+          apiPath={item.thumbnail_url}
+          style={{ width: 128, height: 128, objectFit: 'contain', borderRadius: 10, flexShrink: 0, background: 'var(--border)' }}
+        />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: '.85rem', fontWeight: 600, marginBottom: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {escHtml(item.filename || '(no filename)')}
@@ -661,8 +697,10 @@ export default function Home(): JSX.Element {
                   const isSelected  = selectedId === c.id && selectedSource === c.source
                   const isAuto      = autoSelectId === c.id && c.source === 'hashes' && selectedId === null
                   return (
+                    // onClick lives here only. CandidateCard no longer has its own
+                    // onClick, so clicks bubble up exactly once — no double-fire toggle.
                     <div key={`${c.source}-${c.id}`} data-candidate-id={c.id} onClick={() => handleCandidateClick(c)}>
-                      <CandidateCard c={c} isSelected={isSelected} isAuto={isAuto} isPartnerOnly={c.source === 'partner'} onClick={() => handleCandidateClick(c)} />
+                      <CandidateCard c={c} isSelected={isSelected} isAuto={isAuto} isPartnerOnly={c.source === 'partner'} />
                     </div>
                   )
                 })}
