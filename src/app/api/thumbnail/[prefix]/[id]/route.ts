@@ -1,6 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
 import { thumbnailStoragePath, ThumbnailPrefix } from '@/lib/thumbnails'
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ⚠️  SECURITY: The Service Role Key grants full, unrestricted access to your
+//    Supabase project, bypassing ALL Row Level Security policies.
+//
+//    • NEVER import or use this key in client-side code or browser bundles.
+//    • NEVER log it, expose it in responses, or commit it to source control.
+//    • It must only ever exist in server-side Route Handlers like this one,
+//      loaded exclusively from environment variables at runtime.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BUCKET = 'thumbnails'
+const SIGNED_URL_TTL_SECONDS = 60
 const VALID_PREFIXES = new Set<ThumbnailPrefix>(['wa', 'hashes', 'partner'])
 
 interface Params {
@@ -8,6 +21,8 @@ interface Params {
 }
 
 export async function GET(_request: NextRequest, { params }: Params): Promise<NextResponse> {
+  // ── Validate route params ──────────────────────────────────────────────────
+
   const { prefix, id: idStr } = await params
 
   if (!VALID_PREFIXES.has(prefix as ThumbnailPrefix)) {
@@ -19,24 +34,49 @@ export async function GET(_request: NextRequest, { params }: Params): Promise<Ne
     return NextResponse.json({ error: 'Invalid id' }, { status: 400 })
   }
 
-  // Build the CDN URL directly — never call thumbnailUrl() here.
-  // thumbnailUrl() falls back to /api/thumbnail/... when SUPABASE_URL is unset,
-  // which would redirect back to this same route and cause an infinite loop.
+  // ── Guard: both env vars must be present ──────────────────────────────────
+
   const supabaseUrl = (process.env.SUPABASE_URL ?? '').trim()
-  if (!supabaseUrl) {
+  const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim()
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    console.error('[thumbnail] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not set')
     return NextResponse.json(
-      { error: 'SUPABASE_URL is not configured — cannot resolve thumbnail' },
+      { error: 'Storage is not configured on the server' },
       { status: 503 }
     )
   }
 
-  const path = thumbnailStoragePath(prefix as ThumbnailPrefix, id)
-  const url = `${supabaseUrl}/storage/v1/object/public/thumbnails/${path}`
-  return NextResponse.redirect(url, {
-    status: 302,
-    headers: {
-      // Let the browser cache the redirect for one hour
-      'Cache-Control': 'public, max-age=3600',
-    },
+  // ── Create a server-only Supabase client with the Service Role Key ─────────
+  //    persistSession: false — this is a stateless server route; no cookies/JWT.
+
+  const supabase = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false },
   })
+
+  // ── Generate a short-lived signed URL for the private bucket ──────────────
+
+  const storagePath = thumbnailStoragePath(prefix as ThumbnailPrefix, id)
+
+  const { data, error } = await supabase.storage
+    .from(BUCKET)
+    .createSignedUrl(storagePath, SIGNED_URL_TTL_SECONDS)
+
+  if (error || !data?.signedUrl) {
+    console.error('[thumbnail] createSignedUrl failed:', error?.message)
+    return NextResponse.json(
+      { error: 'Could not generate signed URL' },
+      { status: 500 }
+    )
+  }
+
+  return NextResponse.json(
+    { signedUrl: data.signedUrl },
+    {
+      headers: {
+        // Signed URLs are single-use and expire in 60 s — never cache this response.
+        'Cache-Control': 'no-store',
+      },
+    }
+  )
 }

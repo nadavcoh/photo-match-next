@@ -18,17 +18,12 @@ export function thumbnailStoragePath(prefix: ThumbnailPrefix, id: number): strin
 }
 
 /**
- * Return the best available URL for a thumbnail.
+ * Return the API route URL for a thumbnail.
  *
- * When SUPABASE_URL is set (always true in production) the image is served
- * directly from Supabase Storage CDN — no server round-trip or redirect.
- * Falls back to our own /api/thumbnail proxy for local dev without SUPABASE_URL.
+ * The bucket is private. All access goes through /api/thumbnail which uses
+ * the Service Role Key server-side to create a short-lived signed URL.
+ * Direct CDN paths are intentionally not returned here.
  */
 export function thumbnailUrl(prefix: ThumbnailPrefix, id: number): string {
-  const supabaseUrl = (process.env.SUPABASE_URL ?? '').trim()
-  if (supabaseUrl) {
-    const path = thumbnailStoragePath(prefix, id)
-    return `${supabaseUrl}/storage/v1/object/public/thumbnails/${path}`
-  }
   return `/api/thumbnail/${prefix}/${id}`
 }
