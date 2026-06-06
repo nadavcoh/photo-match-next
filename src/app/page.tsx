@@ -296,9 +296,10 @@ interface SettingsPanelProps {
   showPartner: boolean
   onAutoAdvanceChange: (v: boolean) => void
   onShowPartnerChange: (v: boolean) => void
+  version: string | null
 }
 
-function SettingsPanel({ open, onClose, autoAdvance, showPartner, onAutoAdvanceChange, onShowPartnerChange }: SettingsPanelProps): JSX.Element | null {
+function SettingsPanel({ open, onClose, autoAdvance, showPartner, onAutoAdvanceChange, onShowPartnerChange, version }: SettingsPanelProps): JSX.Element | null {
   if (!open) return null
   return (
     <div onClick={(e) => { if (e.target === e.currentTarget) onClose() }} style={{
@@ -311,6 +312,19 @@ function SettingsPanel({ open, onClose, autoAdvance, showPartner, onAutoAdvanceC
         overflowY: 'auto', animation: 'slide-up .3s ease',
       }}>
         <h2 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: 16 }}>⚙️ Settings</h2>
+
+        <div style={{ fontSize: '.65rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.8px', color: 'var(--muted)', margin: '0 0 8px' }}>
+          Version
+        </div>
+        <PanelRow label="App version">
+          <span style={{ fontFamily: 'monospace', fontSize: '.78rem', color: 'var(--accent)' }}>
+            {version ?? '…'}
+          </span>
+        </PanelRow>
+
+        <div style={{ fontSize: '.65rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.8px', color: 'var(--muted)', margin: '16px 0 8px' }}>
+          Options
+        </div>
         <PanelRow label="Auto-advance after commit">
           <input type="checkbox" checked={autoAdvance}
             onChange={(e: ChangeEvent<HTMLInputElement>) => onAutoAdvanceChange(e.target.checked)}
@@ -418,6 +432,7 @@ export default function Home(): JSX.Element {
   })
   const [undoState, setUndoState] = useState<UndoState | null>(null)
   const [panelOpen, setPanelOpen] = useState(false)
+  const [version, setVersion] = useState<string | null>(null)
   const [autoAdvance, setAutoAdvance] = useState(true)
   const [showPartner, setShowPartner] = useState(true)
   const [online, setOnline] = useState(true)
@@ -425,6 +440,15 @@ export default function Home(): JSX.Element {
   const [undoing, setUndoing] = useState(false)
   const { toasts, toast, remove: removeToast } = useToast()
   const cacheRef = useRef<Map<number, { data: MatchResponse; ts: number }>>(new Map())
+
+  // Fetch version the first time the panel is opened
+  useEffect(() => {
+    if (!panelOpen || version !== null) return
+    fetch('/api/version')
+      .then((r) => (r.ok ? r.json() as Promise<{ version: string }> : Promise.reject()))
+      .then((d) => setVersion(d.version))
+      .catch(() => setVersion('unknown'))
+  }, [panelOpen, version])
 
   useEffect(() => {
     setAutoAdvance(localStorage.getItem('opt-auto-advance') !== 'false')
@@ -722,6 +746,7 @@ export default function Home(): JSX.Element {
         showPartner={showPartner}
         onAutoAdvanceChange={(v) => { setAutoAdvance(v); localStorage.setItem('opt-auto-advance', String(v)) }}
         onShowPartnerChange={(v) => { setShowPartner(v); localStorage.setItem('opt-show-partner', String(v)) }}
+        version={version}
       />
       <Toasts toasts={toasts} remove={removeToast} />
     </>
