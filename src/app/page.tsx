@@ -26,6 +26,12 @@ function fmtDate(iso: string | null | undefined): string {
   return new Date(iso).toLocaleDateString()
 }
 
+function fmtFilesize(s: string | null | undefined): string {
+  if (!s) return ''
+  // DB may store values like "(2.3 MB)" — extract the inner text if so
+  return s.match(/\(([^)]+)\)/)?.[1] ?? s
+}
+
 function hammingClass(d: number | null | undefined): '' | 'good' | 'ok' | 'bad' {
   if (d == null) return ''
   if (d <= 5)  return 'good'
@@ -223,7 +229,7 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly }: CandidateCardPr
           )}
         </div>
         <div style={{ fontSize: '.6rem', color: 'var(--muted)' }}>
-          {[fmtDate(c.timestamp), c.size].filter(Boolean).join(' · ')}
+          {[fmtDate(c.timestamp), c.size, fmtFilesize('filesize' in c ? c.filesize : null)].filter(Boolean).join(' · ')}
         </div>
         {c.url && (
           <div style={{ fontSize: '.6rem', marginTop: 2 }}>
