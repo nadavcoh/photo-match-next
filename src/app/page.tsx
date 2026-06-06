@@ -210,6 +210,11 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly }: CandidateCardPr
           {'origin' in c && c.origin && <SmallBadge>{String(c.origin)}</SmallBadge>}
           {hDist != null && <SmallBadge variant={hVariant || undefined}>H:{hDist}</SmallBadge>}
           {tDist != null && <SmallBadge>T:{tDist}</SmallBadge>}
+          {'pixel_dist' in c && c.pixel_dist != null && (
+            <SmallBadge variant={c.pixel_dist <= 5 ? 'good' : c.pixel_dist <= 15 ? 'ok' : 'bad'}>
+              Px:{c.pixel_dist}
+            </SmallBadge>
+          )}
           {'camera_name' in c && c.camera_name && (
             <SmallBadge style={{ background: 'rgba(34,197,94,.1)', color: '#4ade80' }}>📷</SmallBadge>
           )}
