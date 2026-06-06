@@ -62,6 +62,7 @@ export interface HashCandidate {
   duration: number | null
   hamming: number
   thumb_hamming: number | null
+  pixel_dist: number | null
   thumbnail_url: string
   source: 'hashes'
 }
@@ -75,6 +76,7 @@ export interface PartnerCandidate {
   duration: number | null
   hamming: number
   thumb_hamming: number | null
+  pixel_dist: number | null
   thumbnail_url: string
   source: 'partner'
 }

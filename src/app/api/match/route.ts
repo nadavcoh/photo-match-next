@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { PoolClient } from 'pg'
 import { withClient } from '@/lib/db'
 import { thumbnailUrl } from '@/lib/thumbnails'
+import { downloadThumbnailBytes } from '@/lib/supabase'
+import { pixelDistance, pixelDistanceFallback } from '@/lib/pixelDistance'
 import type {
   WAItem,
   HashCandidate,
@@ -62,6 +64,7 @@ async function fetchHashesCandidates(
         timestamp: isoOrNull(r.timestamp), url: r.url, size: r.size,
         filesize: r.filesize, origin: r.origin, duration: r.duration,
         hamming: r.hamming, thumb_hamming: null,
+        pixel_dist: null,
         thumbnail_url: thumbnailUrl('hashes', r.id), source: 'hashes',
       }))
   }
@@ -104,6 +107,7 @@ async function fetchHashesCandidates(
       timestamp: isoOrNull(r.timestamp), url: r.url, size: r.size,
       filesize: r.filesize, origin: r.origin, duration: r.duration,
       hamming: r.hash_hamming, thumb_hamming: r.thumb_hamming,
+      pixel_dist: null,
       thumbnail_url: thumbnailUrl('hashes', r.id), source: 'hashes',
     }))
 }
@@ -135,6 +139,7 @@ async function fetchPartnerCandidates(
         id: r.id, filename: r.filename ?? '', timestamp: isoOrNull(r.timestamp),
         url: r.url, size: r.size, duration: r.duration,
         hamming: r.hamming, thumb_hamming: null,
+        pixel_dist: null,
         thumbnail_url: thumbnailUrl('partner', r.id), source: 'partner',
       }))
   }
@@ -175,6 +180,7 @@ async function fetchPartnerCandidates(
       id: r.id, filename: r.filename ?? '', timestamp: isoOrNull(r.timestamp),
       url: r.url, size: r.size, duration: r.duration,
       hamming: r.hash_hamming, thumb_hamming: r.thumb_hamming,
+      pixel_dist: null,
       thumbnail_url: thumbnailUrl('partner', r.id), source: 'partner',
     }))
 }
@@ -271,10 +277,44 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         fetchPartnerCandidates(client, waItem, isVideo, threshold).catch((): PartnerCandidate[] => []),
       ])
 
+      // ── Download all thumbnails from the bucket in one parallel batch ────────
+      // Layout: [wa, ...hashes candidates, ...partner candidates]
+      const nHashes = candidates.length
+      const allThumbs = await Promise.all([
+        downloadThumbnailBytes('wa', waItem.id),
+        ...candidates.map((c) => downloadThumbnailBytes('hashes', c.id)),
+        ...partnerCandidates.map((c) => downloadThumbnailBytes('partner', c.id)),
+      ])
+      const waThumbnail = allThumbs[0]
+      const hashesThumbs = allThumbs.slice(1, 1 + nHashes)
+      const partnerThumbs = allThumbs.slice(1 + nHashes)
+
+      // ── Compute pixel distances (sharp, parallel) ─────────────────────────────
+      const [candidatesWithPx, partnerCandidatesWithPx] = await Promise.all([
+        Promise.all(
+          candidates.map(async (c, i) => ({
+            ...c,
+            pixel_dist: await pixelDistance(waThumbnail, hashesThumbs[i]),
+          }))
+        ),
+        Promise.all(
+          partnerCandidates.map(async (c, i) => ({
+            ...c,
+            pixel_dist: await pixelDistance(waThumbnail, partnerThumbs[i]),
+          }))
+        ),
+      ])
+
+      // ── Auto-select: primary logic, then pixel-distance fallback ──────────────
+      const auto_select_id =
+        computeAutoSelect(candidatesWithPx, waItem, isVideo) ??
+        pixelDistanceFallback(candidatesWithPx)
+
       return {
-        count, offset, item: waItem, candidates,
-        partner_candidates: partnerCandidates,
-        auto_select_id: computeAutoSelect(candidates, waItem, isVideo),
+        count, offset, item: waItem,
+        candidates: candidatesWithPx,
+        partner_candidates: partnerCandidatesWithPx,
+        auto_select_id,
       } as MatchResponse
     })
 
