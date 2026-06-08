@@ -14,6 +14,7 @@ import type {
   Candidate,
   UndoState,
 } from '@/lib/types'
+import { WAMediaPreview } from '@/components/WAMediaPreview'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -408,6 +409,21 @@ function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoi
           </div>
         </div>
       </div>
+
+      {/* ── Full-width Cloudinary media preview ──────────────────────────────
+          Renders only when:
+            • This is a WA item  (always true — WAItemCard is exclusively WA)
+            • item.filename starts with "Media"
+          WAMediaPreview enforces both conditions internally as a safety net;
+          the outer startsWith guard avoids a needless render cycle.          */}
+      {item.filename?.startsWith('Media') && (
+        <WAMediaPreview
+          filename={item.filename}
+          isImage={isImage}
+          isVideo={isVideo}
+        />
+      )}
+
       <div style={{ display: 'flex', gap: 8, padding: '10px 12px', borderTop: '1px solid var(--border)', flexWrap: 'wrap' }}>
         <Btn variant="green" onClick={onCommit} loading={committing}>✓ Commit selected</Btn>
         <Btn variant="ghost" onClick={onSkip}>Skip</Btn>
