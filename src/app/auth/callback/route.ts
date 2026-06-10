@@ -12,8 +12,10 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { createServerClient } from '@supabase/ssr'
+import { createServerClient, type CookieMethodsServer } from '@supabase/ssr'
 import { cookies } from 'next/headers'
+
+type CookieToSet = Parameters<CookieMethodsServer['setAll']>[0][number]
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const { searchParams, origin } = new URL(request.url)
@@ -38,7 +40,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         getAll() {
           return cookieStore.getAll()
         },
-        setAll(cookiesToSet) {
+        setAll(cookiesToSet: CookieToSet[]) {
           // Persist the session tokens in HttpOnly cookies so middleware and
           // Server Components can read them on subsequent requests.
           cookiesToSet.forEach(({ name, value, options }) =>
