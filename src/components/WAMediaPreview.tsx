@@ -25,7 +25,7 @@ import type { CSSProperties } from 'react'
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /** Cloudinary folder where WhatsApp media is stored. */
-const CLOUDINARY_FOLDER = 'gphoto_phash_media/Media'
+const CLOUDINARY_FOLDER = 'gphoto_phash_media'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
