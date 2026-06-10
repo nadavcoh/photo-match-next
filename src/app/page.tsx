@@ -416,7 +416,9 @@ function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoi
             • item.filename starts with "Media"
           WAMediaPreview enforces both conditions internally as a safety net;
           the outer startsWith guard avoids a needless render cycle.          */}
+      console.log("item.filename: ", item.filename)
       {item.filename?.startsWith('Media') && (
+        consele.log("passed 1")
         <WAMediaPreview
           filename={item.filename}
           isImage={isImage}
