@@ -38,7 +38,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         getAll() {
           return cookieStore.getAll()
         },
-        setAll(cookiesToSet: CookieToSet[]) {
+        setAll(cookiesToSet: { name: string; value: string; options?: object }[]) {
           // Persist the session tokens in HttpOnly cookies so middleware and
           // Server Components can read them on subsequent requests.
           cookiesToSet.forEach(({ name, value, options }) =>
