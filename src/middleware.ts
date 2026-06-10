@@ -62,7 +62,7 @@ export async function middleware(request: NextRequest) {
         getAll() {
           return request.cookies.getAll()
         },
-        setAll(cookiesToSet) {
+        setAll(cookiesToSet: { name: string; value: string; options?: object }[]) {
           // Propagate new cookies onto the outgoing request so downstream
           // Server Components and Route Handlers see the refreshed session.
           cookiesToSet.forEach(({ name, value, options }) =>
