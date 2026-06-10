@@ -85,7 +85,7 @@ export function WAMediaPreview({ filename, isImage, isVideo }: WAMediaPreviewPro
   }
 
   const publicId = toPublicId(filename)
-
+  console.log(publicId)
   // ── Image branch ─────────────────────────────────────────────────────────
 
   if (isImage) {
