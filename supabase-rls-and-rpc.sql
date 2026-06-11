@@ -113,7 +113,7 @@ RETURNS TABLE (
 LANGUAGE sql
 STABLE
 SECURITY INVOKER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
   SELECT
     id,
@@ -167,7 +167,7 @@ RETURNS TABLE (
 LANGUAGE sql
 STABLE
 SECURITY INVOKER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
   WITH candidate_ids AS (
     SELECT DISTINCT id FROM (
@@ -221,7 +221,7 @@ RETURNS TABLE (
 LANGUAGE sql
 STABLE
 SECURITY INVOKER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
   SELECT
     id,
@@ -258,7 +258,7 @@ RETURNS TABLE (
 LANGUAGE sql
 STABLE
 SECURITY INVOKER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
   WITH candidate_ids AS (
     SELECT DISTINCT id FROM (
