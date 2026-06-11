@@ -15,6 +15,8 @@ import type {
   UndoState,
 } from '@/lib/types'
 import { WAMediaPreview } from '@/components/WAMediaPreview'
+import { createClient } from '@/lib/supabase-client'
+import { THUMBNAILS_BUCKET } from '@/lib/thumbnails'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -29,7 +31,6 @@ function fmtDate(iso: string | null | undefined): string {
 
 function fmtFilesize(s: string | null | undefined): string {
   if (!s) return ''
-  // DB may store values like "(2.3 MB)" — extract the inner text if so
   return s.match(/\(([^)]+)\)/)?.[1] ?? s
 }
 
@@ -114,11 +115,13 @@ function SmallBadge({ children, style, variant }: BadgeProps): JSX.Element {
 
 // ── SignedImage ────────────────────────────────────────────────────────────────
 //
-// The storage bucket is private. This component fetches a short-lived signed
-// URL from our server-side API route, then renders the image from that URL.
-// It never exposes the Service Role Key — that lives only in the route handler.
+// The thumbnails bucket is private. This component generates a short-lived
+// signed URL directly via the authenticated Supabase browser client — no
+// server-side proxy or service role key required.
+// The storage RLS policy allows any authenticated user to read objects from
+// the thumbnails bucket.
 
-function SignedImage({ apiPath, style }: { apiPath: string; style?: CSSProperties }): JSX.Element {
+function SignedImage({ storagePath, style }: { storagePath: string; style?: CSSProperties }): JSX.Element {
   const [src, setSrc]       = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
 
@@ -127,13 +130,19 @@ function SignedImage({ apiPath, style }: { apiPath: string; style?: CSSPropertie
     setSrc(null)
     setFailed(false)
 
-    fetch(apiPath)
-      .then((r) => (r.ok ? (r.json() as Promise<{ signedUrl: string }>) : Promise.reject(r.status)))
-      .then((data) => { if (!cancelled) setSrc(data.signedUrl) })
+    const supabase = createClient()
+    supabase.storage
+      .from(THUMBNAILS_BUCKET)
+      .createSignedUrl(storagePath, 120) // 2-minute TTL
+      .then(({ data, error }) => {
+        if (cancelled) return
+        if (error || !data?.signedUrl) setFailed(true)
+        else setSrc(data.signedUrl)
+      })
       .catch(() => { if (!cancelled) setFailed(true) })
 
     return () => { cancelled = true }
-  }, [apiPath])
+  }, [storagePath])
 
   if (failed) {
     return (
@@ -144,7 +153,6 @@ function SignedImage({ apiPath, style }: { apiPath: string; style?: CSSPropertie
   }
 
   if (!src) {
-    // Blank placeholder while the signed URL is being fetched
     return <div style={{ ...style, background: 'var(--border)' }} />
   }
 
@@ -166,9 +174,6 @@ interface CandidateCardProps {
   isSelected: boolean
   isAuto: boolean
   isPartnerOnly: boolean
-  // No onClick prop — clicks are handled by the wrapper div in the parent and
-  // bubble naturally. Having onClick here AND on the wrapper caused every tap
-  // to call handleCandidateClick twice, toggling the selection back immediately.
 }
 
 function CandidateCard({ c, isSelected, isAuto, isPartnerOnly }: CandidateCardProps): JSX.Element {
@@ -203,7 +208,7 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly }: CandidateCardPr
         }}>✓</div>
       )}
       <SignedImage
-        apiPath={c.thumbnail_url}
+        storagePath={c.thumbnail_url}
         style={{ width: '100%', aspectRatio: '1', objectFit: 'contain', background: 'var(--border)', display: 'block' }}
       />
       <div style={{ padding: 8 }}>
@@ -303,10 +308,14 @@ interface SettingsPanelProps {
   showPartner: boolean
   onAutoAdvanceChange: (v: boolean) => void
   onShowPartnerChange: (v: boolean) => void
+  onSignOut: () => void
   version: string | null
 }
 
-function SettingsPanel({ open, onClose, autoAdvance, showPartner, onAutoAdvanceChange, onShowPartnerChange, version }: SettingsPanelProps): JSX.Element | null {
+function SettingsPanel({
+  open, onClose, autoAdvance, showPartner,
+  onAutoAdvanceChange, onShowPartnerChange, onSignOut, version,
+}: SettingsPanelProps): JSX.Element | null {
   if (!open) return null
   return (
     <div onClick={(e) => { if (e.target === e.currentTarget) onClose() }} style={{
@@ -342,6 +351,26 @@ function SettingsPanel({ open, onClose, autoAdvance, showPartner, onAutoAdvanceC
             onChange={(e: ChangeEvent<HTMLInputElement>) => onShowPartnerChange(e.target.checked)}
             style={{ width: 18, height: 18, cursor: 'pointer' }} />
         </PanelRow>
+
+        {/* ── Account ───────────────────────────────────────────────────── */}
+        <div style={{ fontSize: '.65rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.8px', color: 'var(--muted)', margin: '16px 0 8px' }}>
+          Account
+        </div>
+        <div style={{ paddingTop: 4 }}>
+          <button
+            onClick={onSignOut}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              gap: 8, padding: '10px 0',
+              background: 'rgba(239,68,68,.1)', border: '1px solid rgba(239,68,68,.25)',
+              borderRadius: 12, color: '#f87171',
+              fontSize: '.85rem', fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            ↪ Sign out
+          </button>
+        </div>
+
         <div style={{ marginTop: 20 }}>
           <button onClick={onClose} style={{
             width: '100%', border: '1px solid var(--border)', borderRadius: 20,
@@ -391,18 +420,11 @@ function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoi
     <SmallBadge>{filetype}</SmallBadge>
   )
 
-  // ── Debugging Logs ────────────────────────────────────────────────────────────
-  // Place your logs here, before the JSX return
-  // console.log("item.filename: ", item.filename);
-  // if (item.filename?.startsWith('Media')) {
-  //   console.log("passed 1");
-  // }
-
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden', marginBottom: 16 }}>
       <div style={{ display: 'flex', gap: 12, padding: 12 }}>
         <SignedImage
-          apiPath={item.thumbnail_url}
+          storagePath={item.thumbnail_url}
           style={{ width: 128, height: 128, objectFit: 'contain', borderRadius: 10, flexShrink: 0, background: 'var(--border)' }}
         />
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -417,12 +439,6 @@ function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoi
         </div>
       </div>
 
-      {/* ── Full-width Cloudinary media preview ──────────────────────────────
-          Renders only when:
-            • This is a WA item (always true — WAItemCard is exclusively WA)
-            • item.filename starts with "Media"
-          WAMediaPreview enforces both conditions internally as a safety net;
-          the outer startsWith guard avoids a needless render cycle.          */}
       {item.filename?.startsWith('Media') && (
         <WAMediaPreview
           filename={item.filename}
@@ -439,7 +455,6 @@ function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoi
     </div>
   )
 }
-
 
 // ── App state ──────────────────────────────────────────────────────────────────
 
@@ -471,7 +486,6 @@ export default function Home(): JSX.Element {
   const { toasts, toast, remove: removeToast } = useToast()
   const cacheRef = useRef<Map<number, { data: MatchResponse; ts: number }>>(new Map())
 
-  // Fetch version the first time the panel is opened
   useEffect(() => {
     if (!panelOpen || version !== null) return
     fetch('/api/version')
@@ -551,7 +565,6 @@ export default function Home(): JSX.Element {
     return () => { window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline) }
   }, [checkOnline])
 
-  // Keyboard shortcuts — recreated every render so it always closes over current state
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName
@@ -622,6 +635,12 @@ export default function Home(): JSX.Element {
       await loadMatch(state.offset, true)
     } catch (err) { toast(err instanceof Error ? err.message : 'Undo failed', 'error') }
     finally { setUndoing(false) }
+  }
+
+  async function doSignOut() {
+    const supabase = createClient()
+    await supabase.auth.signOut()
+    window.location.href = '/login'
   }
 
   function handleCandidateClick(c: Candidate) {
@@ -756,8 +775,6 @@ export default function Home(): JSX.Element {
                   const isSelected  = selectedId === c.id && selectedSource === c.source
                   const isAuto      = autoSelectId === c.id && c.source === 'hashes' && selectedId === null
                   return (
-                    // onClick lives here only. CandidateCard no longer has its own
-                    // onClick, so clicks bubble up exactly once — no double-fire toggle.
                     <div key={`${c.source}-${c.id}`} data-candidate-id={c.id} onClick={() => handleCandidateClick(c)}>
                       <CandidateCard c={c} isSelected={isSelected} isAuto={isAuto} isPartnerOnly={c.source === 'partner'} />
                     </div>
@@ -776,6 +793,7 @@ export default function Home(): JSX.Element {
         showPartner={showPartner}
         onAutoAdvanceChange={(v) => { setAutoAdvance(v); localStorage.setItem('opt-auto-advance', String(v)) }}
         onShowPartnerChange={(v) => { setShowPartner(v); localStorage.setItem('opt-show-partner', String(v)) }}
+        onSignOut={() => void doSignOut()}
         version={version}
       />
       <Toasts toasts={toasts} remove={removeToast} />
