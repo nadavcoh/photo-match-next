@@ -2,8 +2,7 @@
  * src/lib/supabase-client.ts
  *
  * Browser-side Supabase client using @supabase/ssr.
- * Safe to import from 'use client' components only.
- * Creates a new client instance per call (singleton handled internally by the package).
+ * Only import from 'use client' components.
  */
 import { createBrowserClient } from '@supabase/ssr'
 
