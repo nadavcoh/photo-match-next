@@ -391,6 +391,13 @@ function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoi
     <SmallBadge>{filetype}</SmallBadge>
   )
 
+  // ── Debugging Logs ────────────────────────────────────────────────────────────
+  // Place your logs here, before the JSX return
+  // console.log("item.filename: ", item.filename);
+  // if (item.filename?.startsWith('Media')) {
+  //   console.log("passed 1");
+  // }
+
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden', marginBottom: 16 }}>
       <div style={{ display: 'flex', gap: 12, padding: 12 }}>
@@ -412,13 +419,14 @@ function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoi
 
       {/* ── Full-width Cloudinary media preview ──────────────────────────────
           Renders only when:
-            • This is a WA item  (always true — WAItemCard is exclusively WA)
+            • This is a WA item (always true — WAItemCard is exclusively WA)
             • item.filename starts with "Media"
           WAMediaPreview enforces both conditions internally as a safety net;
           the outer startsWith guard avoids a needless render cycle.          */}
       {item.filename?.startsWith('Media') && (
         <WAMediaPreview
           filename={item.filename}
+          path={item.path}
           isImage={isImage}
           isVideo={isVideo}
         />
@@ -432,6 +440,7 @@ function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoi
     </div>
   )
 }
+
 
 // ── App state ──────────────────────────────────────────────────────────────────
 

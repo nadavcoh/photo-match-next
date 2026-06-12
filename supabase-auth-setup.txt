@@ -1,0 +1,78 @@
+-- =============================================================================
+-- Supabase Auth – user creation restriction
+-- Run this entire script in the Supabase SQL Editor (Dashboard → SQL Editor).
+-- =============================================================================
+--
+-- What this does
+-- ──────────────
+-- Creates a BEFORE INSERT trigger on auth.users that raises an exception
+-- (and therefore rolls back the insert) if the new user's email is anything
+-- other than Cohen.n@gmail.com.
+--
+-- This is a database-level safety net that works even if the middleware or
+-- Supabase Auth settings are ever misconfigured — no unwanted account can
+-- be persisted in the database at all.
+--
+-- Note: Supabase stores emails in lowercase internally, so the comparison
+-- uses LOWER() on both sides for safety.
+-- =============================================================================
+
+
+-- ── 1. Trigger function ───────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION auth.restrict_user_creation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = auth   -- pin search_path to prevent search-path-hijacking
+AS $$
+BEGIN
+  IF LOWER(NEW.email) <> LOWER('Cohen.n@gmail.com') THEN
+    RAISE EXCEPTION
+      'Registration is not permitted for the email address "%". '
+      'This application is private.',
+      NEW.email;
+  END IF;
+
+  RETURN NEW;  -- allow the insert to proceed
+END;
+$$;
+
+
+-- ── 2. Attach the trigger ─────────────────────────────────────────────────────
+
+-- Drop first so re-running this script is idempotent.
+DROP TRIGGER IF EXISTS restrict_user_creation_trigger ON auth.users;
+
+CREATE TRIGGER restrict_user_creation_trigger
+  BEFORE INSERT ON auth.users
+  FOR EACH ROW
+  EXECUTE FUNCTION auth.restrict_user_creation();
+
+
+-- ── 3. Smoke-test (optional – safe to run, rolls back automatically) ──────────
+--
+-- Uncomment the block below to verify the trigger fires correctly.
+-- Both statements should fail with the exception message above;
+-- the DO block catches the error so the script itself doesn't abort.
+
+/*
+DO $$
+BEGIN
+  -- Should raise: email is not allowed
+  INSERT INTO auth.users (email) VALUES ('attacker@evil.com');
+  RAISE EXCEPTION 'TEST FAILED: insert should have been rejected';
+EXCEPTION
+  WHEN others THEN
+    RAISE NOTICE 'Trigger correctly rejected attacker@evil.com: %', SQLERRM;
+END;
+$$;
+*/
+
+
+-- ── Done ──────────────────────────────────────────────────────────────────────
+-- You can verify the trigger exists with:
+--   SELECT trigger_name, event_manipulation, action_timing
+--   FROM information_schema.triggers
+--   WHERE event_object_schema = 'auth'
+--     AND event_object_table  = 'users';

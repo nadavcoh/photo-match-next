@@ -269,6 +269,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         id: waRow.id, filename: waRow.filename ?? '', filetype: waRow.filetype ?? '',
         hash_bit: waRow.hash_bit, video_thumb_hash_bit: waRow.video_thumb_hash_bit,
         timestamp: isoOrNull(waRow.timestamp), thumbnail_url: thumbnailUrl('wa', waRow.id),
+        path: waRow.path ?? null,
       }
 
       const isVideo = isVideoFiletype(waItem.filetype)
