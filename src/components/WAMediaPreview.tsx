@@ -51,8 +51,8 @@ const MEDIA_ENDPOINT = '/api/cloudinary/media'
 export interface WAMediaPreviewProps {
   /** Raw filename from the WA item (e.g. "Media-WA0123.jpg"). */
   filename: string | null | undefined
-  /** Subdirectory within Media/ assigned by Dynamic Folders (item.path from DB). */
-  path: string | null | undefined
+  /** No longer used — the full relative path is encoded in filename itself. */
+  path?: string | null | undefined
   /** True when item.filetype contains "image". */
   isImage: boolean
   /** True when item.filetype contains "video". */
@@ -91,20 +91,11 @@ export function WAMediaPreview({ filename, path, isImage, isVideo }: WAMediaPrev
 
     const resourceType = isVideo ? 'video' : 'image'
 
-// 1. Construct the full logical path (without the file extension)
-const fullPath = `gphoto_phash_media/${filename}`;
-
-// 2. Isolate the folder (everything before the last slash)
-const path = fullPath.substring(0, fullPath.lastIndexOf('/'));
-
-// 3. Isolate the filename (everything after the last slash)
-const onlyfilename = fullPath.substring(fullPath.lastIndexOf('/') + 1);
-
     // The server owns all path/public_id logic — we send just the raw filename.
     fetch(MEDIA_ENDPOINT, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ filename, path, resourceType }),
+      body:    JSON.stringify({ filename, resourceType }),
     })
       .then((res) => {
         if (!res.ok) throw new Error(`Media endpoint returned HTTP ${res.status}`)

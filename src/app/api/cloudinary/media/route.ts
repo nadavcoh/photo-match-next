@@ -29,13 +29,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // ── 1. Parse & validate body ───────────────────────────────────────────────
 
   let filename: string
-  let itemPath: string
   let resourceType: 'image' | 'video'
 
   try {
     const body = (await request.json()) as {
       filename?: unknown
-      path?: unknown
       resourceType?: unknown
     }
 
@@ -45,15 +43,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         { status: 400 },
       )
     }
-    if (typeof body.path !== 'string' || !body.path.trim()) {
-      return NextResponse.json(
-        { error: 'path is required and must be a non-empty string' },
-        { status: 400 },
-      )
-    }
 
     filename     = body.filename.trim()
-    itemPath     = body.path.trim()
     resourceType = body.resourceType === 'video' ? 'video' : 'image'
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
@@ -61,23 +52,27 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   // ── 2. Build folder + filename for the Cloudinary Search expression ────────
   //
-  //    The full logical path is: gphoto_phash_media/Media/{item.path}/{stem}
-  //    Splitting at the LAST slash produces the exact folder and filename that
-  //    Cloudinary's Search API expects, regardless of how deep item.path is.
+  //    item.filename already encodes the full relative path, e.g.:
+  //      "Media/972525361536-1602045182@g.us/c/d/cde30200-d234-4b57-8c74-c7675aabcc72.jpg"
+  //
+  //    Steps:
+  //      1. Strip the file extension to get the bare path stem.
+  //      2. Prepend the top-level Cloudinary folder to form the absolute path.
+  //      3. Split at the LAST '/' — everything before is the folder; everything
+  //         after is the filename that Cloudinary Search's `filename` field holds.
   //
   //    Example:
-  //      filename  = "cde30200-d234-4b57-8c74-c7675aabcc72.jpg"
-  //      item.path = "972525361536.../c/d"
-  //      stem      = "cde30200-d234-4b57-8c74-c7675aabcc72"
-  //      fullPath  = "gphoto_phash_media/Media/972525361536.../c/d/cde30200..."
-  //      folder    = "gphoto_phash_media/Media/972525361536.../c/d"
-  //      stem      = "cde30200-d234-4b57-8c74-c7675aabcc72"   ← only last segment
+  //      filename              = "Media/972525361536.../c/d/cde30200....jpg"
+  //      filenameWithoutExt    = "Media/972525361536.../c/d/cde30200..."
+  //      fullPath              = "gphoto_phash_media/Media/972525361536.../c/d/cde30200..."
+  //      folder                = "gphoto_phash_media/Media/972525361536.../c/d"
+  //      stem                  = "cde30200..."
 
-  // Strip extension (dot + 1-5 non-dot chars at end); no-op if already bare.
+  // 1. Strip extension (dot + 1-5 non-dot chars at end); no-op if already bare.
   const filenameWithoutExtension = filename.replace(/\.[^.]{1,5}$/, '')
 
-  // Exact snippet from task requirements:
-  const fullPath = `gphoto_phash_media/Media/${itemPath}/${filenameWithoutExtension}`
+  // 2-3. Prepend root folder, then split at last '/'.
+  const fullPath = `gphoto_phash_media/${filenameWithoutExtension}`
   const folder   = fullPath.substring(0, fullPath.lastIndexOf('/'))
   const stem     = fullPath.substring(fullPath.lastIndexOf('/') + 1)
 
