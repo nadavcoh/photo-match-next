@@ -10,20 +10,29 @@
  *   1. The item is a WA item  — always guaranteed; WAItemCard is WA-only.
  *   2. item.filename starts with "Media".
  *
- * Private-delivery signing flow
- * ──────────────────────────────
- *   Because assets are stored under Cloudinary's `private` delivery type, raw
- *   Cloudinary URLs are inaccessible without an HMAC-SHA1 signature that
- *   incorporates the API secret.  Generating that signature client-side would
- *   leak the secret, so the work is delegated to the server:
+ * ── How URLs are resolved (Dynamic Folders) ──────────────────────────────────
  *
- *     1. On mount, POST /api/cloudinary/sign { publicId, resourceType }.
- *     2. The route handler signs the URL with CLOUDINARY_API_SECRET (server-only)
- *        and returns { url }.  The signed URL expires in 1 hour.
- *     3. The signed URL is stored in local state and rendered in a plain
- *        <img> or <video> tag.  No Cloudinary credentials ever reach the browser.
+ * Assets were synced using Cloudinary's Dynamic Folders mode, which assigns
+ * each file a random Base64 public_id rather than the original file path.
+ * This component does NOT know or construct the public_id — all of that work
+ * happens server-side in /api/cloudinary/media:
  *
- *   The pattern mirrors how SignedImage already handles Supabase thumbnails.
+ *   1. Client POSTs { filename, resourceType } to /api/cloudinary/media.
+ *
+ *   2. Server strips the extension to get the filename stem, then calls
+ *      findPublicId() which is wrapped in Next.js unstable_cache:
+ *        • First call per stem  → live Cloudinary Search API query.
+ *        • All later calls      → instant cache hit, zero API quota used.
+ *      (revalidate: false means the cached public_id never auto-expires,
+ *       which is correct because Cloudinary public_ids are immutable.)
+ *
+ *   3. Server signs the discovered public_id with CLOUDINARY_API_SECRET
+ *      (type: 'authenticated', HMAC-SHA1, expires in 1 h) and returns { url }.
+ *
+ *   4. Client stores the signed URL in state and renders <img> or <video>.
+ *
+ * The API secret and all Cloudinary credentials never reach the browser.
+ * This component holds zero knowledge of the Cloudinary folder structure.
  */
 
 import { useState, useEffect } from 'react'
@@ -31,27 +40,11 @@ import type { CSSProperties } from 'react'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-/** Cloudinary folder where WhatsApp media is stored. */
-const CLOUDINARY_FOLDER = 'gphoto_phash_media'
-
-/** Route handler that signs private Cloudinary URLs (API secret lives here). */
-const SIGN_ENDPOINT = '/api/cloudinary/sign'
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
 /**
- * Strips the file extension (if any) and returns the Cloudinary public_id.
- *
- * "Media-WA0022.mp4" → "gphoto_phash_media/Media-WA0022"
- * "Media-WA0022"     → "gphoto_phash_media/Media-WA0022"  (no extension — safe)
- *
- * The regex only removes a trailing dot + 1-5 non-dot chars, so filenames
- * without extensions pass through untouched.
+ * Route handler that resolves the Dynamic Folders public_id (via cached search)
+ * and returns a signed authenticated-delivery URL.
  */
-function toPublicId(filename: string): string {
-  const base = filename.replace(/\.[^.]{1,5}$/, '')
-  return `${CLOUDINARY_FOLDER}/${base}`
-}
+const MEDIA_ENDPOINT = '/api/cloudinary/media'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -64,7 +57,7 @@ export interface WAMediaPreviewProps {
   isVideo: boolean
 }
 
-/** Internal state machine for the async signed-URL fetch. */
+/** Internal state machine for the async URL fetch. */
 type UrlState =
   | { status: 'idle' }
   | { status: 'loading' }
@@ -76,11 +69,12 @@ type UrlState =
 export function WAMediaPreview({ filename, isImage, isVideo }: WAMediaPreviewProps) {
   const [urlState, setUrlState] = useState<UrlState>({ status: 'idle' })
 
-  // ── Fetch a signed private-delivery URL from the server ──────────────────
+  // ── Fetch the server-resolved, signed URL ────────────────────────────────
   //
-  //    Re-runs whenever the item changes (filename / type switch).
-  //    The cleanup function sets `cancelled = true` so a stale in-flight fetch
-  //    cannot overwrite state that belongs to a newer item.
+  //    The server does the heavy lifting (Cloudinary search + signing).
+  //    This effect re-runs whenever the item changes (filename / media type).
+  //    The cleanup flag prevents a stale in-flight fetch from overwriting state
+  //    that already belongs to the next item.
 
   useEffect(() => {
     const qualifies = filename?.startsWith('Media') && (isImage || isVideo)
@@ -93,16 +87,16 @@ export function WAMediaPreview({ filename, isImage, isVideo }: WAMediaPreviewPro
     let cancelled = false
     setUrlState({ status: 'loading' })
 
-    const publicId     = toPublicId(filename)
     const resourceType = isVideo ? 'video' : 'image'
 
-    fetch(SIGN_ENDPOINT, {
+    // The server owns all path/public_id logic — we send just the raw filename.
+    fetch(MEDIA_ENDPOINT, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ publicId, resourceType }),
+      body:    JSON.stringify({ filename, resourceType }),
     })
       .then((res) => {
-        if (!res.ok) throw new Error(`Sign endpoint returned HTTP ${res.status}`)
+        if (!res.ok) throw new Error(`Media endpoint returned HTTP ${res.status}`)
         return res.json() as Promise<{ url: string }>
       })
       .then(({ url }) => {
@@ -115,12 +109,10 @@ export function WAMediaPreview({ filename, isImage, isVideo }: WAMediaPreviewPro
         }
       })
 
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [filename, isImage, isVideo])
 
-  // ── Guard: trigger condition (mirrors useEffect guard, keeps render pure) ──
+  // ── Guard: trigger condition ─────────────────────────────────────────────
 
   if (!filename?.startsWith('Media') || (!isImage && !isVideo)) return null
 
@@ -129,25 +121,23 @@ export function WAMediaPreview({ filename, isImage, isVideo }: WAMediaPreviewPro
   const wrapStyle: CSSProperties = {
     borderTop:  '1px solid var(--border)',
     overflow:   'hidden',
-    lineHeight: 0, // eliminates the gap beneath inline/block media elements
+    lineHeight: 0,
   }
 
   // ── Loading skeleton ─────────────────────────────────────────────────────
 
   if (urlState.status === 'idle' || urlState.status === 'loading') {
     return (
-      <div
-        style={{
-          ...wrapStyle,
-          display:         'flex',
-          alignItems:      'center',
-          justifyContent:  'center',
-          minHeight:       72,
-          lineHeight:      'normal',
-          background:      'var(--border)',
-          opacity:         0.6,
-        }}
-      >
+      <div style={{
+        ...wrapStyle,
+        display:        'flex',
+        alignItems:     'center',
+        justifyContent: 'center',
+        minHeight:      72,
+        lineHeight:     'normal',
+        background:     'var(--border)',
+        opacity:        0.6,
+      }}>
         <span style={{ fontSize: '.78rem', color: 'var(--muted, #888)', lineHeight: 'normal' }}>
           Loading preview…
         </span>
@@ -169,22 +159,15 @@ export function WAMediaPreview({ filename, isImage, isVideo }: WAMediaPreviewPro
         <img
           src={url}
           alt={filename ?? ''}
-          style={{
-            width:      '100%',
-            height:     'auto',
-            display:    'block',
-            objectFit:  'cover',
-          }}
+          style={{ width: '100%', height: 'auto', display: 'block', objectFit: 'cover' }}
         />
       </div>
     )
   }
 
   // ── Video branch ─────────────────────────────────────────────────────────
-  //
-  //    `key={url}` forces React to unmount/remount the <video> element whenever
-  //    the signed URL changes (e.g. item navigation), preventing the browser
-  //    from continuing to play the previous item's video.
+  //    key={url} forces React to remount <video> when the item changes so the
+  //    browser doesn't continue playing the previous video.
 
   return (
     <div style={{ ...wrapStyle, background: '#000' }}>
@@ -195,12 +178,7 @@ export function WAMediaPreview({ filename, isImage, isVideo }: WAMediaPreviewPro
         autoPlay
         loop
         playsInline
-        style={{
-          width:      '100%',
-          display:    'block',
-          maxHeight:  420,
-          objectFit:  'cover',
-        }}
+        style={{ width: '100%', display: 'block', maxHeight: 420, objectFit: 'cover' }}
       />
     </div>
   )
