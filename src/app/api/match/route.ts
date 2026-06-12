@@ -1,18 +1,24 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { PoolClient } from 'pg'
-import { withClient } from '@/lib/db'
-import { thumbnailUrl } from '@/lib/thumbnails'
-import { downloadThumbnailBytes } from '@/lib/supabase'
-import { pixelDistance, pixelDistanceFallback } from '@/lib/pixelDistance'
-import type {
-  WAItem,
-  HashCandidate,
-  PartnerCandidate,
-  MatchResponse,
-  WARow,
-} from '@/lib/types'
+/**
+ * src/app/api/match/route.ts
+ *
+ * Returns the next unmatched WA item and its hash/partner candidates.
+ *
+ * Changes from the original:
+ *  - Removed: pg Pool (db.ts), downloadThumbnailBytes (supabase.ts service role key)
+ *  - DB queries: Supabase client via .from() for simple selects,
+ *    .rpc() for the pgvector <~> similarity queries (see SQL script).
+ *  - Storage downloads: supabase.storage.from('thumbnails').download()
+ *    using the authenticated user's JWT — no service role key needed.
+ */
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+import { NextRequest, NextResponse } from 'next/server'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { createClient } from '@/lib/supabase-server'
+import { thumbnailStoragePath, thumbnailUrl, THUMBNAILS_BUCKET, ThumbnailPrefix } from '@/lib/thumbnails'
+import { pixelDistance, pixelDistanceFallback } from '@/lib/pixelDistance'
+import type { WAItem, HashCandidate, PartnerCandidate, MatchResponse } from '@/lib/types'
+
+// ── Config ─────────────────────────────────────────────────────────────────────
 
 function getThreshold(): number {
   return parseInt(process.env.HAMMING_THRESHOLD ?? '10', 10)
@@ -23,175 +29,195 @@ function isVideoFiletype(filetype: string): boolean {
   return f === 'video' || f === 'video/mp4'
 }
 
-function isoOrNull(d: Date | null | undefined): string | null {
-  return d ? d.toISOString() : null
+function isoOrNull(d: string | null | undefined): string | null {
+  return d ?? null
 }
 
-// ── Hashes candidates ──────────────────────────────────────────────────────────
+// ── Storage download ───────────────────────────────────────────────────────────
 
-const HASHES_COLS = `
-  id, filename, camera_name, location, location_name,
-  timestamp, url, size, filesize, origin, duration
-`
-
-interface HashesBaseRow {
-  id: number; filename: string | null; camera_name: string | null
-  location: string | null; location_name: string | null; timestamp: Date | null
-  url: string | null; size: string | null; filesize: string | null
-  origin: string | null; duration: number | null
+/**
+ * Download raw JPEG bytes for one thumbnail from the private bucket using the
+ * authenticated user's session — no service role key required.
+ * The RLS policy on storage.objects allows authenticated reads.
+ */
+async function downloadThumbnailBytes(
+  supabase: SupabaseClient,
+  prefix: ThumbnailPrefix,
+  id: number,
+): Promise<Buffer | null> {
+  try {
+    const { data, error } = await supabase.storage
+      .from(THUMBNAILS_BUCKET)
+      .download(thumbnailStoragePath(prefix, id))
+    if (error || !data) return null
+    return Buffer.from(await data.arrayBuffer())
+  } catch {
+    return null
+  }
 }
 
-interface HashesImageRow extends HashesBaseRow { hamming: number }
-interface HashesVideoRow extends HashesBaseRow { thumb_hamming: number; hash_hamming: number }
+// ── RPC row types ──────────────────────────────────────────────────────────────
+// These mirror the RETURNS TABLE definitions in the SQL script.
+
+interface HashesRpcRow {
+  id: number
+  filename: string | null
+  camera_name: string | null
+  location: string | null
+  location_name: string | null
+  ts: string | null          // timestamptz → ISO string
+  url: string | null
+  size: string | null
+  filesize: string | null
+  origin: string | null
+  duration: number | null
+  hamming: number            // hash_bit distance
+  thumb_hamming: number | null // video_thumb_hash_bit distance (null for images)
+}
+
+interface PartnerRpcRow {
+  id: number
+  filename: string | null
+  ts: string | null
+  url: string | null
+  size: string | null
+  duration: number | null
+  hamming: number
+  thumb_hamming: number | null
+}
+
+// ── Candidate fetchers ─────────────────────────────────────────────────────────
 
 async function fetchHashesCandidates(
-  client: PoolClient, waItem: WAItem, isVideo: boolean, threshold: number
+  supabase: SupabaseClient,
+  waItem: WAItem,
+  isVideo: boolean,
+  threshold: number,
 ): Promise<HashCandidate[]> {
   if (!isVideo) {
     if (!waItem.hash_bit) return []
-    const { rows } = await client.query<HashesImageRow>(
-      `SELECT ${HASHES_COLS}, (hash_bit <~> $1::bit(64))::int AS hamming
-       FROM   hashes
-       ORDER  BY hash_bit <~> $1::bit(64)
-       LIMIT  50`,
-      [waItem.hash_bit]
-    )
-    return rows
-      .filter((r: HashesImageRow) => r.hamming <= threshold)
-      .map((r: HashesImageRow): HashCandidate => ({
-        id: r.id, filename: r.filename ?? '', camera_name: r.camera_name,
-        location: r.location, location_name: r.location_name,
-        timestamp: isoOrNull(r.timestamp), url: r.url, size: r.size,
-        filesize: r.filesize, origin: r.origin, duration: r.duration,
-        hamming: r.hamming, thumb_hamming: null,
-        pixel_dist: null,
-        thumbnail_url: thumbnailUrl('hashes', r.id), source: 'hashes',
-      }))
+
+    const { data, error } = await supabase.rpc('match_hashes_image', {
+      p_hash_bit: waItem.hash_bit,
+      p_threshold: threshold,
+    })
+    if (error || !data) return []
+
+    return (data as HashesRpcRow[]).map((r) => ({
+      id: r.id,
+      filename: r.filename ?? '',
+      camera_name: r.camera_name,
+      location: r.location,
+      location_name: r.location_name,
+      timestamp: isoOrNull(r.ts),
+      url: r.url,
+      size: r.size,
+      filesize: r.filesize,
+      origin: r.origin,
+      duration: r.duration,
+      hamming: r.hamming,
+      thumb_hamming: null,
+      pixel_dist: null,
+      thumbnail_url: thumbnailUrl('hashes', r.id),
+      source: 'hashes' as const,
+    }))
   }
 
+  // Video: match by video_thumb_hash_bit, falling back to hash_bit
   const searchBit = waItem.video_thumb_hash_bit ?? waItem.hash_bit
   if (!searchBit) return []
 
-  const [byThumb, byHash] = await Promise.all([
-    client.query<HashesVideoRow>(
-      `SELECT ${HASHES_COLS},
-              (video_thumb_hash_bit <~> $1::bit(64))::int AS thumb_hamming,
-              (hash_bit             <~> $1::bit(64))::int AS hash_hamming
-       FROM   hashes ORDER BY video_thumb_hash_bit <~> $1::bit(64) LIMIT 50`,
-      [searchBit]
-    ),
-    client.query<HashesVideoRow>(
-      `SELECT ${HASHES_COLS},
-              (video_thumb_hash_bit <~> $1::bit(64))::int AS thumb_hamming,
-              (hash_bit             <~> $1::bit(64))::int AS hash_hamming
-       FROM   hashes ORDER BY hash_bit <~> $1::bit(64) LIMIT 50`,
-      [searchBit]
-    ),
-  ])
+  const { data, error } = await supabase.rpc('match_hashes_video', {
+    p_search_bit: searchBit,
+    p_threshold: threshold,
+  })
+  if (error || !data) return []
 
-  const merged = new Map<number, HashesVideoRow>()
-  for (const row of [...byThumb.rows, ...byHash.rows]) {
-    const ex = merged.get(row.id)
-    merged.set(row.id, ex ? {
-      ...ex,
-      thumb_hamming: Math.min(ex.thumb_hamming, row.thumb_hamming),
-      hash_hamming:  Math.min(ex.hash_hamming,  row.hash_hamming),
-    } : row)
-  }
-
-  return Array.from(merged.values())
-    .filter((r: HashesVideoRow) => r.thumb_hamming <= threshold || r.hash_hamming <= threshold)
-    .map((r: HashesVideoRow): HashCandidate => ({
-      id: r.id, filename: r.filename ?? '', camera_name: r.camera_name,
-      location: r.location, location_name: r.location_name,
-      timestamp: isoOrNull(r.timestamp), url: r.url, size: r.size,
-      filesize: r.filesize, origin: r.origin, duration: r.duration,
-      hamming: r.hash_hamming, thumb_hamming: r.thumb_hamming,
-      pixel_dist: null,
-      thumbnail_url: thumbnailUrl('hashes', r.id), source: 'hashes',
-    }))
+  return (data as HashesRpcRow[]).map((r) => ({
+    id: r.id,
+    filename: r.filename ?? '',
+    camera_name: r.camera_name,
+    location: r.location,
+    location_name: r.location_name,
+    timestamp: isoOrNull(r.ts),
+    url: r.url,
+    size: r.size,
+    filesize: r.filesize,
+    origin: r.origin,
+    duration: r.duration,
+    hamming: r.hamming,
+    thumb_hamming: r.thumb_hamming,
+    pixel_dist: null,
+    thumbnail_url: thumbnailUrl('hashes', r.id),
+    source: 'hashes' as const,
+  }))
 }
-
-// ── Partner candidates ─────────────────────────────────────────────────────────
-
-const PARTNER_COLS = `id, filename, timestamp, url, size, duration`
-
-interface PartnerBaseRow {
-  id: number; filename: string | null; timestamp: Date | null
-  url: string | null; size: string | null; duration: number | null
-}
-interface PartnerImageRow extends PartnerBaseRow { hamming: number }
-interface PartnerVideoRow extends PartnerBaseRow { thumb_hamming: number; hash_hamming: number }
 
 async function fetchPartnerCandidates(
-  client: PoolClient, waItem: WAItem, isVideo: boolean, threshold: number
+  supabase: SupabaseClient,
+  waItem: WAItem,
+  isVideo: boolean,
+  threshold: number,
 ): Promise<PartnerCandidate[]> {
   if (!isVideo) {
     if (!waItem.hash_bit) return []
-    const { rows } = await client.query<PartnerImageRow>(
-      `SELECT ${PARTNER_COLS}, (hash_bit <~> $1::bit(64))::int AS hamming
-       FROM   partner ORDER BY hash_bit <~> $1::bit(64) LIMIT 50`,
-      [waItem.hash_bit]
-    )
-    return rows
-      .filter((r: PartnerImageRow) => r.hamming <= threshold)
-      .map((r: PartnerImageRow): PartnerCandidate => ({
-        id: r.id, filename: r.filename ?? '', timestamp: isoOrNull(r.timestamp),
-        url: r.url, size: r.size, duration: r.duration,
-        hamming: r.hamming, thumb_hamming: null,
-        pixel_dist: null,
-        thumbnail_url: thumbnailUrl('partner', r.id), source: 'partner',
-      }))
+
+    const { data, error } = await supabase.rpc('match_partner_image', {
+      p_hash_bit: waItem.hash_bit,
+      p_threshold: threshold,
+    })
+    if (error || !data) return []
+
+    return (data as PartnerRpcRow[]).map((r) => ({
+      id: r.id,
+      filename: r.filename ?? '',
+      timestamp: isoOrNull(r.ts),
+      url: r.url,
+      size: r.size,
+      duration: r.duration,
+      hamming: r.hamming,
+      thumb_hamming: null,
+      pixel_dist: null,
+      thumbnail_url: thumbnailUrl('partner', r.id),
+      source: 'partner' as const,
+    }))
   }
 
   const searchBit = waItem.video_thumb_hash_bit ?? waItem.hash_bit
   if (!searchBit) return []
 
-  const [byThumb, byHash] = await Promise.all([
-    client.query<PartnerVideoRow>(
-      `SELECT ${PARTNER_COLS},
-              (video_thumb_hash_bit <~> $1::bit(64))::int AS thumb_hamming,
-              (hash_bit             <~> $1::bit(64))::int AS hash_hamming
-       FROM   partner ORDER BY video_thumb_hash_bit <~> $1::bit(64) LIMIT 50`,
-      [searchBit]
-    ),
-    client.query<PartnerVideoRow>(
-      `SELECT ${PARTNER_COLS},
-              (video_thumb_hash_bit <~> $1::bit(64))::int AS thumb_hamming,
-              (hash_bit             <~> $1::bit(64))::int AS hash_hamming
-       FROM   partner ORDER BY hash_bit <~> $1::bit(64) LIMIT 50`,
-      [searchBit]
-    ),
-  ])
+  const { data, error } = await supabase.rpc('match_partner_video', {
+    p_search_bit: searchBit,
+    p_threshold: threshold,
+  })
+  if (error || !data) return []
 
-  const merged = new Map<number, PartnerVideoRow>()
-  for (const row of [...byThumb.rows, ...byHash.rows]) {
-    const ex = merged.get(row.id)
-    merged.set(row.id, ex ? {
-      ...ex,
-      thumb_hamming: Math.min(ex.thumb_hamming, row.thumb_hamming),
-      hash_hamming:  Math.min(ex.hash_hamming,  row.hash_hamming),
-    } : row)
-  }
-
-  return Array.from(merged.values())
-    .filter((r: PartnerVideoRow) => r.thumb_hamming <= threshold || r.hash_hamming <= threshold)
-    .map((r: PartnerVideoRow): PartnerCandidate => ({
-      id: r.id, filename: r.filename ?? '', timestamp: isoOrNull(r.timestamp),
-      url: r.url, size: r.size, duration: r.duration,
-      hamming: r.hash_hamming, thumb_hamming: r.thumb_hamming,
-      pixel_dist: null,
-      thumbnail_url: thumbnailUrl('partner', r.id), source: 'partner',
-    }))
+  return (data as PartnerRpcRow[]).map((r) => ({
+    id: r.id,
+    filename: r.filename ?? '',
+    timestamp: isoOrNull(r.ts),
+    url: r.url,
+    size: r.size,
+    duration: r.duration,
+    hamming: r.hamming,
+    thumb_hamming: r.thumb_hamming,
+    pixel_dist: null,
+    thumbnail_url: thumbnailUrl('partner', r.id),
+    source: 'partner' as const,
+  }))
 }
 
-// ── Auto-select ────────────────────────────────────────────────────────────────
+// ── Auto-select (pure logic — unchanged from original) ─────────────────────────
 
 function daysBetween(a: Date, b: Date): number {
   return Math.abs(a.getTime() - b.getTime()) / 86_400_000
 }
 
-function computeAutoSelect(candidates: HashCandidate[], waItem: WAItem, isVideo: boolean): number | null {
+function computeAutoSelect(
+  candidates: HashCandidate[],
+  waItem: WAItem,
+  isVideo: boolean,
+): number | null {
   const waTs = waItem.timestamp ? new Date(waItem.timestamp) : null
 
   function tsOf(c: HashCandidate): Date | null {
@@ -203,31 +229,35 @@ function computeAutoSelect(candidates: HashCandidate[], waItem: WAItem, isVideo:
       if (candidates[0].location && !candidates[1].location) return candidates[0].id
     } else {
       const h0ts = tsOf(candidates[0])
-      if (candidates[0].camera_name && !candidates[1].camera_name && waTs && h0ts && daysBetween(waTs, h0ts) < 60)
-        return candidates[0].id
+      if (
+        candidates[0].camera_name && !candidates[1].camera_name &&
+        waTs && h0ts && daysBetween(waTs, h0ts) < 60
+      ) return candidates[0].id
     }
   } else if (candidates.length > 2) {
     if (!isVideo) {
-      const withCamera = candidates.filter((c: HashCandidate) => c.camera_name)
+      const withCamera = candidates.filter((c) => c.camera_name)
       if (waTs && withCamera.length > 0) {
-        const recent = withCamera.filter((c: HashCandidate) => {
-          const ts = tsOf(c); return ts && daysBetween(waTs, ts) < 30
+        const recent = withCamera.filter((c) => {
+          const ts = tsOf(c)
+          return ts && daysBetween(waTs, ts) < 30
         })
         if (recent.length > 0) {
-          const minH = Math.min(...recent.map((c: HashCandidate) => c.hamming))
-          const best = recent.filter((c: HashCandidate) => c.hamming === minH)
+          const minH = Math.min(...recent.map((c) => c.hamming))
+          const best = recent.filter((c) => c.hamming === minH)
           if (best.length === 1) return best[0].id
         }
       }
     } else {
-      const withLoc = candidates.filter((c: HashCandidate) => c.location)
+      const withLoc = candidates.filter((c) => c.location)
       if (waTs && withLoc.length > 0) {
-        const recent = withLoc.filter((c: HashCandidate) => {
-          const ts = tsOf(c); return ts && daysBetween(waTs, ts) < 30
+        const recent = withLoc.filter((c) => {
+          const ts = tsOf(c)
+          return ts && daysBetween(waTs, ts) < 30
         })
         if (recent.length > 0) {
-          const minT = Math.min(...recent.map((c: HashCandidate) => c.thumb_hamming ?? 999))
-          const best = recent.filter((c: HashCandidate) => (c.thumb_hamming ?? 999) === minT)
+          const minT = Math.min(...recent.map((c) => c.thumb_hamming ?? 999))
+          const best = recent.filter((c) => (c.thumb_hamming ?? 999) === minT)
           if (best.length === 1) return best[0].id
         }
       }
@@ -240,86 +270,118 @@ function computeAutoSelect(candidates: HashCandidate[], waItem: WAItem, isVideo:
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const { searchParams } = new URL(request.url)
-  const offset = Math.max(0, parseInt(searchParams.get('offset') ?? '0', 10))
+  const offset    = Math.max(0, parseInt(searchParams.get('offset') ?? '0', 10))
   const threshold = getThreshold()
 
   try {
-    const result = await withClient(async (client) => {
-      const { rows: countRows } = await client.query<{ count: number }>(
-        `SELECT count(*)::int AS count FROM wa WHERE id_hash IS NULL AND processed IS NULL`
+    const supabase = await createClient()
+
+    // ── Count unmatched items ──────────────────────────────────────────────
+    const { count, error: countError } = await supabase
+      .from('wa')
+      .select('*', { count: 'exact', head: true })
+      .is('id_hash', null)
+      .is('processed', null)
+
+    if (countError) throw new Error(countError.message)
+
+    const total = count ?? 0
+    if (total === 0) {
+      return NextResponse.json(
+        { count: 0, offset, item: null, candidates: [], partner_candidates: [], auto_select_id: null } as MatchResponse,
+        { headers: { 'Cache-Control': 'no-store' } }
       )
-      const count: number = countRows[0]?.count ?? 0
-      if (count === 0) {
-        return { count: 0, offset, item: null, candidates: [], partner_candidates: [], auto_select_id: null } as MatchResponse
-      }
+    }
 
-      const { rows: waRows } = await client.query<WARow>(
-        `SELECT id, filename, filetype, hash_bit, video_thumb_hash_bit, timestamp
-         FROM   wa WHERE id_hash IS NULL AND processed IS NULL
-         ORDER  BY timestamp DESC, id ASC LIMIT 1 OFFSET $1`,
-        [offset]
+    // ── Fetch item at offset ───────────────────────────────────────────────
+    const { data: waRows, error: waError } = await supabase
+      .from('wa')
+      .select('id, filename, filetype, hash_bit, video_thumb_hash_bit, timestamp')
+      .is('id_hash', null)
+      .is('processed', null)
+      .order('timestamp', { ascending: false })
+      .order('id',        { ascending: true  })
+      .range(offset, offset)
+
+    if (waError) throw new Error(waError.message)
+    if (!waRows?.length) {
+      return NextResponse.json(
+        { count: 0, offset, item: null, candidates: [], partner_candidates: [], auto_select_id: null } as MatchResponse,
+        { headers: { 'Cache-Control': 'no-store' } }
       )
+    }
 
-      const waRow = waRows[0]
-      if (!waRow) {
-        return { count: 0, offset, item: null, candidates: [], partner_candidates: [], auto_select_id: null } as MatchResponse
-      }
+    const waRow = waRows[0] as {
+      id: number
+      filename: string | null
+      filetype: string | null
+      hash_bit: string | null
+      video_thumb_hash_bit: string | null
+      timestamp: string | null
+    }
 
-      const waItem: WAItem = {
-        id: waRow.id, filename: waRow.filename ?? '', filetype: waRow.filetype ?? '',
-        hash_bit: waRow.hash_bit, video_thumb_hash_bit: waRow.video_thumb_hash_bit,
-        timestamp: isoOrNull(waRow.timestamp), thumbnail_url: thumbnailUrl('wa', waRow.id),
-        path: waRow.path ?? null,
-      }
+    const waItem: WAItem = {
+      id:                   waRow.id,
+      filename:             waRow.filename             ?? '',
+      filetype:             waRow.filetype             ?? '',
+      hash_bit:             waRow.hash_bit,
+      video_thumb_hash_bit: waRow.video_thumb_hash_bit,
+      timestamp:            isoOrNull(waRow.timestamp),
+      thumbnail_url:        thumbnailUrl('wa', waRow.id),
+    }
 
-      const isVideo = isVideoFiletype(waItem.filetype)
-      const [candidates, partnerCandidates] = await Promise.all([
-        fetchHashesCandidates(client, waItem, isVideo, threshold),
-        fetchPartnerCandidates(client, waItem, isVideo, threshold).catch((): PartnerCandidate[] => []),
-      ])
+    const isVideo = isVideoFiletype(waItem.filetype)
 
-      // ── Download all thumbnails from the bucket in one parallel batch ────────
-      // Layout: [wa, ...hashes candidates, ...partner candidates]
-      const nHashes = candidates.length
-      const allThumbs = await Promise.all([
-        downloadThumbnailBytes('wa', waItem.id),
-        ...candidates.map((c) => downloadThumbnailBytes('hashes', c.id)),
-        ...partnerCandidates.map((c) => downloadThumbnailBytes('partner', c.id)),
-      ])
-      const waThumbnail = allThumbs[0]
-      const hashesThumbs = allThumbs.slice(1, 1 + nHashes)
-      const partnerThumbs = allThumbs.slice(1 + nHashes)
+    // ── Fetch candidates (hashes + partner) in parallel ────────────────────
+    const [candidates, partnerCandidates] = await Promise.all([
+      fetchHashesCandidates(supabase, waItem, isVideo, threshold),
+      fetchPartnerCandidates(supabase, waItem, isVideo, threshold).catch((): PartnerCandidate[] => []),
+    ])
 
-      // ── Compute pixel distances (sharp, parallel) ─────────────────────────────
-      const [candidatesWithPx, partnerCandidatesWithPx] = await Promise.all([
-        Promise.all(
-          candidates.map(async (c, i) => ({
-            ...c,
-            pixel_dist: await pixelDistance(waThumbnail, hashesThumbs[i]),
-          }))
-        ),
-        Promise.all(
-          partnerCandidates.map(async (c, i) => ({
-            ...c,
-            pixel_dist: await pixelDistance(waThumbnail, partnerThumbs[i]),
-          }))
-        ),
-      ])
+    // ── Download all thumbnails for pixel-distance computation ─────────────
+    // Layout: [wa, ...hashes, ...partner]
+    const nHashes = candidates.length
+    const allThumbs = await Promise.all([
+      downloadThumbnailBytes(supabase, 'wa',      waItem.id),
+      ...candidates.map((c)       => downloadThumbnailBytes(supabase, 'hashes',  c.id)),
+      ...partnerCandidates.map((c) => downloadThumbnailBytes(supabase, 'partner', c.id)),
+    ])
+    const waThumbnail  = allThumbs[0]
+    const hashesThumbs = allThumbs.slice(1, 1 + nHashes)
+    const partnerThumbs = allThumbs.slice(1 + nHashes)
 
-      // ── Auto-select: primary logic, then pixel-distance fallback ──────────────
-      const auto_select_id =
-        computeAutoSelect(candidatesWithPx, waItem, isVideo) ??
-        pixelDistanceFallback(candidatesWithPx)
+    // ── Compute pixel distances (sharp, parallel) ──────────────────────────
+    const [candidatesWithPx, partnerCandidatesWithPx] = await Promise.all([
+      Promise.all(
+        candidates.map(async (c, i) => ({
+          ...c,
+          pixel_dist: await pixelDistance(waThumbnail, hashesThumbs[i]),
+        }))
+      ),
+      Promise.all(
+        partnerCandidates.map(async (c, i) => ({
+          ...c,
+          pixel_dist: await pixelDistance(waThumbnail, partnerThumbs[i]),
+        }))
+      ),
+    ])
 
-      return {
-        count, offset, item: waItem,
+    // ── Auto-select: primary logic, then pixel-distance fallback ───────────
+    const auto_select_id =
+      computeAutoSelect(candidatesWithPx, waItem, isVideo) ??
+      pixelDistanceFallback(candidatesWithPx)
+
+    return NextResponse.json(
+      {
+        count: total,
+        offset,
+        item: waItem,
         candidates: candidatesWithPx,
         partner_candidates: partnerCandidatesWithPx,
         auto_select_id,
-      } as MatchResponse
-    })
-
-    return NextResponse.json(result, { headers: { 'Cache-Control': 'no-store' } })
+      } as MatchResponse,
+      { headers: { 'Cache-Control': 'no-store' } }
+    )
   } catch (err) {
     console.error('[/api/match] error:', err)
     const message = err instanceof Error ? err.message : 'Internal server error'

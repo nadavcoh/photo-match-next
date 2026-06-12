@@ -1,23 +1,37 @@
+/**
+ * src/app/api/match/skip/route.ts
+ *
+ * Marks a WA item as processed (skipped) without assigning a match.
+ * The item is removed from the unmatched queue.
+ */
+
 import { NextRequest, NextResponse } from 'next/server'
-import { withClient } from '@/lib/db'
+import { createClient } from '@/lib/supabase-server'
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  let body: { wa_id?: number }
+  let body: { wa_id: number }
   try {
-    body = (await request.json()) as { wa_id?: number }
+    body = await request.json() as { wa_id: number }
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
   const { wa_id } = body
-  if (!wa_id || typeof wa_id !== 'number') {
-    return NextResponse.json({ error: 'wa_id (number) is required' }, { status: 400 })
+
+  if (typeof wa_id !== 'number') {
+    return NextResponse.json({ error: 'wa_id is required' }, { status: 400 })
   }
 
   try {
-    await withClient(async (client) => {
-      await client.query('UPDATE wa SET processed = TRUE WHERE id = $1', [wa_id])
-    })
+    const supabase = await createClient()
+
+    const { error } = await supabase
+      .from('wa')
+      .update({ processed: true })
+      .eq('id', wa_id)
+
+    if (error) throw new Error(error.message)
+
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('[/api/match/skip] error:', err)
