@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import './globals.css'
+import Script from 'next/script';
 
 export const metadata: Metadata = {
   title: 'Photo Match',
@@ -30,7 +31,25 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="h-full">
-      <body className="h-full">{children}</body>
+      <body className="h-full">
+
+          <>
+            <Script 
+              src="https://unpkg.com/vconsole@latest/dist/vconsole.min.js" 
+              strategy="lazyOnload" 
+            />
+            <Script id="vconsole-init" strategy="lazyOnload">
+              {`
+                window.onload = function() {
+                  if (window.VConsole) {
+                    new window.VConsole();
+                  }
+                };
+              `}
+            </Script>
+          </>
+
+{children}</body>
     </html>
   )
 }
