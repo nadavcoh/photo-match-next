@@ -8,23 +8,19 @@ import { findPublicId } from '@/lib/cloudinary-search'
 // Two-step server-side pipeline:
 //
 //   Step 1 — Cached lookup (findPublicId via cloudinary-search.ts)
-//             Translates the local filename into the real Cloudinary public_id
-//             that was assigned by Dynamic Folders.  The result is cached
-//             forever in Next.js's data cache; the Cloudinary Search API is
-//             called at most ONCE per unique filename, globally.
+//             Builds the full logical path from item.path + filename, splits it
+//             at the last '/' to get the exact folder and filename that
+//             Cloudinary Search expects, then queries (once per asset, globally).
 //
 //   Step 2 — Authenticated URL signing (cloudinary.url)
 //             Generates a short-lived HMAC-SHA1 signed URL for the asset
 //             stored under the `authenticated` delivery type.
 //
-// Request body:  { filename: string, resourceType: 'image' | 'video' }
+// Request body:  { filename: string, path: string, resourceType: 'image' | 'video' }
 // Response:      { url: string }
 //
 // ⚠️  Security: CLOUDINARY_API_SECRET stays server-side only.
 // ─────────────────────────────────────────────────────────────────────────────
-
-/** Folder used when searching Cloudinary for the asset. */
-const CLOUDINARY_FOLDER = 'gphoto_phash_media'
 
 /** Signed URLs expire after this many seconds (Cloudinary enforces server-side). */
 const SIGNED_URL_TTL = 3_600 // 1 hour
@@ -33,10 +29,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // ── 1. Parse & validate body ───────────────────────────────────────────────
 
   let filename: string
+  let itemPath: string
   let resourceType: 'image' | 'video'
 
   try {
-    const body = (await request.json()) as { filename?: unknown; resourceType?: unknown }
+    const body = (await request.json()) as {
+      filename?: unknown
+      path?: unknown
+      resourceType?: unknown
+    }
 
     if (typeof body.filename !== 'string' || !body.filename.trim()) {
       return NextResponse.json(
@@ -44,20 +45,41 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         { status: 400 },
       )
     }
+    if (typeof body.path !== 'string' || !body.path.trim()) {
+      return NextResponse.json(
+        { error: 'path is required and must be a non-empty string' },
+        { status: 400 },
+      )
+    }
 
     filename     = body.filename.trim()
+    itemPath     = body.path.trim()
     resourceType = body.resourceType === 'video' ? 'video' : 'image'
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  // ── 2. Derive the filename stem (no extension) ────────────────────────────
-  //    Cloudinary's Search API `filename` field stores the original stem even
-  //    in Dynamic Folders mode, so we strip the extension before searching.
-  //    The regex only removes a trailing dot + 1-5 non-dot chars, so stems
-  //    without extensions pass through unchanged.
+  // ── 2. Build folder + filename for the Cloudinary Search expression ────────
+  //
+  //    The full logical path is: gphoto_phash_media/Media/{item.path}/{stem}
+  //    Splitting at the LAST slash produces the exact folder and filename that
+  //    Cloudinary's Search API expects, regardless of how deep item.path is.
+  //
+  //    Example:
+  //      filename  = "cde30200-d234-4b57-8c74-c7675aabcc72.jpg"
+  //      item.path = "972525361536.../c/d"
+  //      stem      = "cde30200-d234-4b57-8c74-c7675aabcc72"
+  //      fullPath  = "gphoto_phash_media/Media/972525361536.../c/d/cde30200..."
+  //      folder    = "gphoto_phash_media/Media/972525361536.../c/d"
+  //      stem      = "cde30200-d234-4b57-8c74-c7675aabcc72"   ← only last segment
 
-  const stem = filename.replace(/\.[^.]{1,5}$/, '')
+  // Strip extension (dot + 1-5 non-dot chars at end); no-op if already bare.
+  const filenameWithoutExtension = filename.replace(/\.[^.]{1,5}$/, '')
+
+  // Exact snippet from task requirements:
+  const fullPath = `gphoto_phash_media/Media/${itemPath}/${filenameWithoutExtension}`
+  const folder   = fullPath.substring(0, fullPath.lastIndexOf('/'))
+  const stem     = fullPath.substring(fullPath.lastIndexOf('/') + 1)
 
   // ── 3. Env-var guard ──────────────────────────────────────────────────────
 
@@ -75,14 +97,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   // ── 4. Cached Dynamic-Folder public_id lookup ─────────────────────────────
   //    findPublicId is wrapped in unstable_cache (revalidate: false), so this
-  //    call hits the Cloudinary Search API at most once per unique stem, ever.
+  //    call hits the Cloudinary Search API at most once per unique asset, ever.
   //    All subsequent calls are instant cache hits with zero API quota consumed.
 
-  const publicId = await findPublicId(CLOUDINARY_FOLDER, stem)
+  const publicId = await findPublicId(folder, stem)
 
   if (!publicId) {
     return NextResponse.json(
-      { error: `No Cloudinary asset found for folder="${CLOUDINARY_FOLDER}" filename="${stem}"` },
+      { error: `No Cloudinary asset found — folder:"${folder}" filename:"${stem}"` },
       { status: 404 },
     )
   }

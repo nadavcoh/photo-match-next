@@ -51,6 +51,8 @@ const MEDIA_ENDPOINT = '/api/cloudinary/media'
 export interface WAMediaPreviewProps {
   /** Raw filename from the WA item (e.g. "Media-WA0123.jpg"). */
   filename: string | null | undefined
+  /** Subdirectory within Media/ assigned by Dynamic Folders (item.path from DB). */
+  path: string | null | undefined
   /** True when item.filetype contains "image". */
   isImage: boolean
   /** True when item.filetype contains "video". */
@@ -66,7 +68,7 @@ type UrlState =
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function WAMediaPreview({ filename, isImage, isVideo }: WAMediaPreviewProps) {
+export function WAMediaPreview({ filename, path, isImage, isVideo }: WAMediaPreviewProps) {
   const [urlState, setUrlState] = useState<UrlState>({ status: 'idle' })
 
   // ── Fetch the server-resolved, signed URL ────────────────────────────────
@@ -93,7 +95,7 @@ export function WAMediaPreview({ filename, isImage, isVideo }: WAMediaPreviewPro
     fetch(MEDIA_ENDPOINT, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ filename, resourceType }),
+      body:    JSON.stringify({ filename, path, resourceType }),
     })
       .then((res) => {
         if (!res.ok) throw new Error(`Media endpoint returned HTTP ${res.status}`)

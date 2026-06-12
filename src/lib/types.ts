@@ -46,6 +46,7 @@ export interface WAItem {
   video_thumb_hash_bit: string | null
   timestamp: string | null
   thumbnail_url: string
+  path: string | null   // subdirectory within Media/ (from Dynamic Folders sync)
 }
 
 export interface HashCandidate {
