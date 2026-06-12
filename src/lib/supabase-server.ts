@@ -2,8 +2,9 @@
  * src/lib/supabase-server.ts
  *
  * Server-side Supabase client using @supabase/ssr.
- * Safe to import from Route Handlers and Server Components (not middleware).
- * Uses next/headers cookies() to persist the session across requests.
+ * Safe to use in Route Handlers and Server Components (not middleware).
+ * Reads the active session from Next.js cookies so the user's JWT is
+ * automatically forwarded to every PostgREST / Storage request.
  */
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
@@ -25,8 +26,7 @@ export async function createClient() {
               cookieStore.set(name, value, options)
             )
           } catch {
-            // setAll was called from a Server Component — safe to ignore.
-            // Middleware will handle session refreshes automatically.
+            // Called from a Server Component — session refresh handled by middleware.
           }
         },
       },
