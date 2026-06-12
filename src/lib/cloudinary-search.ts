@@ -96,10 +96,11 @@ async function _searchPublicId(folder: string, filename: string): Promise<string
     //   • type:authenticated narrows to the correct delivery type, preventing
     //     false matches against assets uploaded with a different type.
     const expression =
-      `filename:"${filename}" AND type:authenticated`
+      `asset_folder:"${folder}" AND display_name:"${filename}" AND type:authenticated`
 
     const result = await cloudinary.search
       .expression(expression)
+      .sort_by('bytes', 'desc') // largest file first — full-res beats same-display_name thumbnails
       .max_results(1)   // at most one match expected per asset
       .execute() as {
         resources: Array<{ public_id: string }>
