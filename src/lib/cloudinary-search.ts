@@ -66,29 +66,41 @@ function configureCloudinary(): boolean {
 /**
  * Performs a live Cloudinary Search API call.
  *
- * Expression: folder="{folder}" AND filename="{stem}"
- *   folder   — the top-level Cloudinary folder (e.g. "gphoto_phash_media")
- *   stem     — the original filename WITHOUT extension (e.g. "Media-WA0022")
- *              The Search API's `filename` field stores the original stem even
- *              in Dynamic Folders mode.
+ * `folder` and `filename` must already be correctly split by the caller —
+ * see media/route.ts for the exact lastIndexOf('/') logic.
+ *
+ *   folder   — full folder path up to (not including) the filename
+ *              e.g. "gphoto_phash_media/Media/972525361536.../c/d"
+ *   filename — asset filename stem WITHOUT extension or folder prefix
+ *              e.g. "cde30200-d234-4b57-8c74-c7675aabcc72"
+ *
+ * FIX 1: .with_field('public_id') has been removed.
+ *   public_id is returned by default; explicitly requesting it via with_field()
+ *   throws "Invalid with_field options 'public_id'" — a 400 Bad Request.
+ *
+ * FIX 2: Expression uses colon-quote syntax (field:"value") instead of
+ *   equals-quote (field="value"), and adds type:authenticated to narrow results
+ *   to the correct delivery type.
  *
  * Returns the public_id of the first matching asset, or null if not found.
  *
  * ⚠️  Do NOT call this directly — always use the exported findPublicId() below
  *     so results are served from the persistent cache.
  */
-async function _searchPublicId(folder: string, stem: string): Promise<string | null> {
+async function _searchPublicId(folder: string, filename: string): Promise<string | null> {
   if (!configureCloudinary()) return null
 
   try {
-    // The Search API expression uses quoted values so filenames with hyphens
-    // or other special characters are matched exactly.
-    const expression = `folder="${folder}" AND filename="${stem}"`
+    // Colon-quote syntax: field:"value"
+    //   • Handles multi-segment paths and special characters correctly.
+    //   • type:authenticated narrows to the correct delivery type, preventing
+    //     false matches against assets uploaded with a different type.
+    const expression =
+      `folder:"${folder}" AND filename:"${filename}" AND type:authenticated`
 
     const result = await cloudinary.search
       .expression(expression)
-      .with_field('public_id')    // we only need the public_id field
-      .max_results(1)             // at most one match expected
+      .max_results(1)   // at most one match expected per asset
       .execute() as {
         resources: Array<{ public_id: string }>
         total_count: number
@@ -97,9 +109,14 @@ async function _searchPublicId(folder: string, stem: string): Promise<string | n
     const publicId = result.resources[0]?.public_id ?? null
 
     if (publicId) {
-      console.log(`[cloudinary-search] CACHE MISS — found: ${publicId} for "${folder}/${stem}"`)
+      console.log(
+        `[cloudinary-search] CACHE MISS — found ${publicId}` +
+        ` for folder:"${folder}" filename:"${filename}"`,
+      )
     } else {
-      console.warn(`[cloudinary-search] No asset found for folder="${folder}" filename="${stem}"`)
+      console.warn(
+        `[cloudinary-search] No asset found — expression: ${expression}`,
+      )
     }
 
     return publicId
@@ -112,17 +129,18 @@ async function _searchPublicId(folder: string, stem: string): Promise<string | n
 // ── Cached public_id lookup (the only export you should use) ─────────────────
 
 /**
- * findPublicId(folder, stem) → string | null
+ * findPublicId(folder, filename) → string | null
  *
- * Returns the Cloudinary public_id for the asset whose original filename stem
- * matches `stem` inside `folder`.
+ * Returns the Cloudinary public_id for the asset identified by the given
+ * folder path and filename stem.  Both must be pre-split correctly — see
+ * media/route.ts for the exact splitting logic.
  *
  * Caching behaviour:
- *   • Cache key  : ['cld-pid', folder, stem]  (one entry per unique asset)
+ *   • Cache key  : ['cld-pid', folder, filename]  (one entry per unique asset)
  *   • TTL        : infinite (revalidate: false) — public_ids never change
  *   • Invalidate : revalidateTag('cloudinary') to bust all lookup entries
  *
- * The first call for any (folder, stem) pair hits the Cloudinary Search API.
+ * The first call for any (folder, filename) pair hits the Cloudinary Search API.
  * Every subsequent call — regardless of which serverless instance handles the
  * request — is a cache hit and returns instantly with zero API quota consumed.
  */
