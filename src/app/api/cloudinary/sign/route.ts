@@ -5,20 +5,20 @@ import { v2 as cloudinary } from 'cloudinary'
 // POST /api/cloudinary/sign
 //
 // Generates a short-lived signed URL for a Cloudinary asset stored under the
-// `private` delivery type.  The Cloudinary API secret is consumed exclusively
-// here — it is a server-only env var and must never appear in any
-// NEXT_PUBLIC_ variable or in client-side code.
+// `authenticated` delivery type (synced with: cloudinary sync -O type authenticated).
+// The Cloudinary API secret is consumed exclusively here — it is a server-only
+// env var and must never appear in any NEXT_PUBLIC_ variable or client-side code.
 //
 // Request body:  { publicId: string, resourceType: 'image' | 'video' }
 // Response:      { url: string }  — HMAC-SHA1 signed, expires in SIGNED_URL_TTL
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Only public_ids under this prefix can be signed by this endpoint.
- *  Prevents the route from being weaponised to sign arbitrary Cloudinary assets. */
+ *  Prevents the route from being used to sign arbitrary Cloudinary assets. */
 const ALLOWED_FOLDER_PREFIX = 'gphoto_phash_media/'
 
 /** Signed URLs expire after this many seconds.
- *  Cloudinary enforces the expiry server-side via the `expires_at` field
+ *  Cloudinary enforces the expiry server-side via the `expires_at` field,
  *  which is included in the HMAC-SHA1 signature itself. */
 const SIGNED_URL_TTL = 3_600 // 1 hour
 
@@ -82,20 +82,21 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     secure:     true,   // always use https://
   })
 
-  // ── 5. Generate a signed private-delivery URL ──────────────────────────────
+  // ── 5. Generate a signed authenticated-delivery URL ───────────────────────
   //
-  //    sign_url:   true       — injects s--{HMAC-SHA1}-- into the URL path
-  //    type:       'private'  — matches the delivery type used when syncing assets
-  //    expires_at: <unix ts>  — Cloudinary validates this server-side; it is
-  //                             included in the signature so it cannot be tampered
-  //    transformation         — applied to images only (fill-crop to card width)
+  //    sign_url:   true              — injects s--{HMAC-SHA1}-- into the URL path
+  //    type:       'authenticated'   — matches the delivery type used when syncing
+  //                                    assets (CLI flag: -O type authenticated)
+  //    expires_at: <unix ts>         — Cloudinary validates this server-side; it is
+  //                                    included in the signature so it cannot be tampered
+  //    transformation                — applied to images only (fill-crop to card width)
 
   const expiresAt = Math.floor(Date.now() / 1000) + SIGNED_URL_TTL
 
   try {
     const url = cloudinary.url(publicId, {
       resource_type: resourceType,
-      type:          'private',
+      type:          'authenticated',
       sign_url:      true,
       expires_at:    expiresAt,
       secure:        true,
