@@ -442,7 +442,6 @@ function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoi
       {item.filename?.startsWith('Media') && (
         <WAMediaPreview
           filename={item.filename}
-          path={item.path}
           isImage={isImage}
           isVideo={isVideo}
         />
