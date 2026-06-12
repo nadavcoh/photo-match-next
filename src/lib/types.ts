@@ -7,6 +7,7 @@ export interface WARow {
   hash_bit: string | null           // 64-char '0'/'1' string from bit(64) column
   video_thumb_hash_bit: string | null
   timestamp: Date | null
+  path: string | null
 }
 
 export interface HashesRow {
