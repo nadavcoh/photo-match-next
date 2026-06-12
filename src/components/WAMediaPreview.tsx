@@ -40,17 +40,16 @@ const SIGN_ENDPOINT = '/api/cloudinary/sign'
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Strips the file extension (if any) and returns the Cloudinary public_id.
+ * Returns the Cloudinary public_id for a given filename.
  *
- * "Media-WA0022.mp4" → "gphoto_phash_media/Media-WA0022"
- * "Media-WA0022"     → "gphoto_phash_media/Media-WA0022"  (no extension — safe)
+ * The extension is intentionally preserved because assets were synced via
+ * `cloudinary sync`, which stores the extension as part of the public_id:
  *
- * The regex only removes a trailing dot + 1-5 non-dot chars, so filenames
- * without extensions pass through untouched.
+ *   "Media-WA0022.mp4" → "gphoto_phash_media/Media-WA0022.mp4"  ✓
+ *   "Media-WA0022"     → "gphoto_phash_media/Media-WA0022"       ✓ (no-op)
  */
 function toPublicId(filename: string): string {
-  const base = filename.replace(/\.[^.]{1,5}$/, '')
-  return `${CLOUDINARY_FOLDER}/${base}`
+  return `${CLOUDINARY_FOLDER}/${filename}`
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
