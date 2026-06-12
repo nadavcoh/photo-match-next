@@ -24,7 +24,6 @@ export interface WAItem {
    * supabase.storage.from(THUMBNAILS_BUCKET).createSignedUrl(path, ttl).
    */
   thumbnail_url: string
-  path: string | null   // subdirectory within Media/ (from Dynamic Folders sync)
 }
 
 export interface HashCandidate {
