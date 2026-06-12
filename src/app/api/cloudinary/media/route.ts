@@ -99,7 +99,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   if (!publicId) {
     return NextResponse.json(
-      { error: `No Cloudinary asset found — asset_folder:"${folder}" filename:"${stem}"` },
+      { error: `No Cloudinary asset found — folder:"${folder}" filename:"${stem}"` },
       { status: 404 },
     )
   }
