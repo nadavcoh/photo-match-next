@@ -98,7 +98,7 @@ const fullPath = `gphoto_phash_media/${filename}`;
 const path = fullPath.substring(0, fullPath.lastIndexOf('/'));
 
 // 3. Isolate the filename (everything after the last slash)
-const filename = fullPath.substring(fullPath.lastIndexOf('/') + 1);
+const onlyfilename = fullPath.substring(fullPath.lastIndexOf('/') + 1);
 
     // The server owns all path/public_id logic — we send just the raw filename.
     fetch(MEDIA_ENDPOINT, {
