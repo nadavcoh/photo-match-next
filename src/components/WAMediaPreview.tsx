@@ -3,142 +3,184 @@
 /**
  * WAMediaPreview
  *
- * Renders a full-width Cloudinary media preview below the thumbnail/metadata
- * row inside WAItemCard.
+ * Full-width Cloudinary media preview rendered below the thumbnail/metadata row
+ * inside WAItemCard.
  *
  * Trigger condition (both must be true):
- *   1. The item is a WA item  — guaranteed by context; the caller (WAItemCard)
- *      only renders this component for WA items.
- *   2. item.filename starts with "Media"
+ *   1. The item is a WA item  — always guaranteed; WAItemCard is WA-only.
+ *   2. item.filename starts with "Media".
  *
- * Images  → <CldImage>  with crop="fill" and responsive sizes.
- * Videos  → native <video> with an optimised URL from getCldVideoUrl().
- *           (Avoids the extra CldVideoPlayer CSS import in a 'use client' file.)
+ * ── How URLs are resolved (Dynamic Folders) ──────────────────────────────────
  *
- * Requires:
- *   NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME set in .env.local
+ * Assets were synced using Cloudinary's Dynamic Folders mode, which assigns
+ * each file a random Base64 public_id rather than the original file path.
+ * This component does NOT know or construct the public_id — all of that work
+ * happens server-side in /api/cloudinary/media:
+ *
+ *   1. Client POSTs { filename, resourceType } to /api/cloudinary/media.
+ *
+ *   2. Server strips the extension to get the filename stem, then calls
+ *      findPublicId() which is wrapped in Next.js unstable_cache:
+ *        • First call per stem  → live Cloudinary Search API query.
+ *        • All later calls      → instant cache hit, zero API quota used.
+ *      (revalidate: false means the cached public_id never auto-expires,
+ *       which is correct because Cloudinary public_ids are immutable.)
+ *
+ *   3. Server signs the discovered public_id with CLOUDINARY_API_SECRET
+ *      (type: 'authenticated', HMAC-SHA1, expires in 1 h) and returns { url }.
+ *
+ *   4. Client stores the signed URL in state and renders <img> or <video>.
+ *
+ * The API secret and all Cloudinary credentials never reach the browser.
+ * This component holds zero knowledge of the Cloudinary folder structure.
  */
 
-import { CldImage, getCldVideoUrl } from 'next-cloudinary'
+import { useState, useEffect } from 'react'
 import type { CSSProperties } from 'react'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-/** Cloudinary folder where WhatsApp media is stored. */
-const CLOUDINARY_FOLDER = 'gphoto_phash_media'
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
 /**
- * Strips the file extension (if any) and returns a Cloudinary public_id.
- *
- * "Media-WA0022.mp4" → "gphoto_phash_media/Media/Media-WA0022"
- * "Media-WA0022"     → "gphoto_phash_media/Media/Media-WA0022"  (no extension — safe)
+ * Route handler that resolves the Dynamic Folders public_id (via cached search)
+ * and returns a signed authenticated-delivery URL.
  */
-function toPublicId(filename: string): string {
-  // Only strip if there is an extension-like suffix (dot + 1–5 non-dot chars at end)
-  const base = filename.replace(/\.[^.]{1,5}$/, '')
-  return `${CLOUDINARY_FOLDER}/${base}`
-}
+const MEDIA_ENDPOINT = '/api/cloudinary/media'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface WAMediaPreviewProps {
-  /** The raw filename from the WA item (e.g. "Media-WA0123.jpg"). */
+  /** Raw filename from the WA item (e.g. "Media-WA0123.jpg"). */
   filename: string | null | undefined
+  /** No longer used — the full relative path is encoded in filename itself. */
+  path?: string | null | undefined
   /** True when item.filetype contains "image". */
   isImage: boolean
   /** True when item.filetype contains "video". */
   isVideo: boolean
 }
 
+/** Internal state machine for the async URL fetch. */
+type UrlState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'ready'; url: string }
+  | { status: 'error' }
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function WAMediaPreview({ filename, isImage, isVideo }: WAMediaPreviewProps) {
-  // ── Guard: trigger conditions ────────────────────────────────────────────
+export function WAMediaPreview({ filename, path, isImage, isVideo }: WAMediaPreviewProps) {
+  const [urlState, setUrlState] = useState<UrlState>({ status: 'idle' })
 
-  // No filename, or doesn't start with "Media" → nothing to show.
-  if (!filename?.startsWith('Media')) return null
+  // ── Fetch the server-resolved, signed URL ────────────────────────────────
+  //
+  //    The server does the heavy lifting (Cloudinary search + signing).
+  //    This effect re-runs whenever the item changes (filename / media type).
+  //    The cleanup flag prevents a stale in-flight fetch from overwriting state
+  //    that already belongs to the next item.
 
-  // Only handle image or video; skip unknown filetypes.
-  if (!isImage && !isVideo) return null
+  useEffect(() => {
+    const qualifies = filename?.startsWith('Media') && (isImage || isVideo)
 
-  // Env-var guard: if the cloud name is missing the Cloudinary URLs will be
-  // malformed — log a warning and degrade gracefully.
-  const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME
-  if (!cloudName) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.warn(
-        '[WAMediaPreview] NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME is not set. ' +
-        'Add it to .env.local to enable the full-width media preview.'
-      )
+    if (!qualifies || !filename) {
+      setUrlState({ status: 'idle' })
+      return
     }
-    return null
-  }
 
-  // ── Shared wrapper styles ────────────────────────────────────────────────
+    let cancelled = false
+    setUrlState({ status: 'loading' })
+
+    const resourceType = isVideo ? 'video' : 'image'
+
+    // The server owns all path/public_id logic — we send just the raw filename.
+    fetch(MEDIA_ENDPOINT, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ filename, resourceType }),
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(`Media endpoint returned HTTP ${res.status}`)
+        return res.json() as Promise<{ url: string }>
+      })
+      .then(({ url }) => {
+        if (!cancelled) setUrlState({ status: 'ready', url })
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          console.error('[WAMediaPreview] Failed to get signed URL:', err)
+          setUrlState({ status: 'error' })
+        }
+      })
+
+    return () => { cancelled = true }
+  }, [filename, isImage, isVideo])
+
+  // ── Guard: trigger condition ─────────────────────────────────────────────
+
+  if (!filename?.startsWith('Media') || (!isImage && !isVideo)) return null
+
+  // ── Shared wrapper ────────────────────────────────────────────────────────
 
   const wrapStyle: CSSProperties = {
-    borderTop: '1px solid var(--border)',
-    overflow: 'hidden',
-    lineHeight: 0, // collapses the small gap below inline/block media elements
+    borderTop:  '1px solid var(--border)',
+    overflow:   'hidden',
+    lineHeight: 0,
   }
 
-  const publicId = toPublicId(filename)
-  console.log(publicId)
+  // ── Loading skeleton ─────────────────────────────────────────────────────
+
+  if (urlState.status === 'idle' || urlState.status === 'loading') {
+    return (
+      <div style={{
+        ...wrapStyle,
+        display:        'flex',
+        alignItems:     'center',
+        justifyContent: 'center',
+        minHeight:      72,
+        lineHeight:     'normal',
+        background:     'var(--border)',
+        opacity:        0.6,
+      }}>
+        <span style={{ fontSize: '.78rem', color: 'var(--muted, #888)', lineHeight: 'normal' }}>
+          Loading preview…
+        </span>
+      </div>
+    )
+  }
+
+  // ── Error: fail silently — the thumbnail row above is still visible ───────
+
+  if (urlState.status === 'error') return null
+
+  const { url } = urlState
+
   // ── Image branch ─────────────────────────────────────────────────────────
 
   if (isImage) {
     return (
       <div style={wrapStyle}>
-        <CldImage
-          // public_id in Cloudinary (no file extension)
-          src={publicId}
-          // Intrinsic dimensions — used for aspect-ratio calculation.
-          // 4:3 is a reasonable default; Cloudinary crop="fill" will handle
-          // any actual source ratio without letterboxing.
-          width={960}
-          height={720}
-          alt={filename}
-          // crop="fill" — scales and crops to fill the requested dimensions
-          // without distorting the image, equivalent to object-fit: cover.
-          crop={{ type: 'fill' }}
-          // Responsive: full card width up to the 960 px max-width container.
-          sizes="(max-width: 960px) 100vw, 960px"
-          style={{
-            width: '100%',
-            height: 'auto',
-            display: 'block',
-            objectFit: 'cover',
-          }}
+        <img
+          src={url}
+          alt={filename ?? ''}
+          style={{ width: '100%', height: 'auto', display: 'block', objectFit: 'cover' }}
         />
       </div>
     )
   }
 
   // ── Video branch ─────────────────────────────────────────────────────────
-
-  // getCldVideoUrl returns an optimised Cloudinary streaming URL for the asset.
-  // We pair it with a plain <video> tag so there's no extra CSS to import.
-  const videoSrc = getCldVideoUrl({ src: publicId })
+  //    key={url} forces React to remount <video> when the item changes so the
+  //    browser doesn't continue playing the previous video.
 
   return (
     <div style={{ ...wrapStyle, background: '#000' }}>
       <video
-        src={videoSrc}
-        // Autoplay muted loop gives the feel of an inline preview / GIF.
+        key={url}
+        src={url}
         muted
         autoPlay
         loop
         playsInline
-        controls={false}
-        style={{
-          width: '100%',
-          display: 'block',
-          // Cap height so very tall videos don't push content off-screen.
-          maxHeight: 420,
-          objectFit: 'cover',
-        }}
+        style={{ width: '100%', display: 'block', maxHeight: 420, objectFit: 'cover' }}
       />
     </div>
   )
