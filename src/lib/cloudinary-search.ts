@@ -96,7 +96,7 @@ async function _searchPublicId(folder: string, filename: string): Promise<string
     //   • type:authenticated narrows to the correct delivery type, preventing
     //     false matches against assets uploaded with a different type.
     const expression =
-      `asset_folder:"${folder}" AND filename:"${filename}" AND type:authenticated`
+      `filename:"${filename}" AND type:authenticated`
 
     const result = await cloudinary.search
       .expression(expression)
