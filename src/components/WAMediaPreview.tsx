@@ -98,4 +98,110 @@ export function WAMediaPreview({ filename, path, isImage, isVideo }: WAMediaPrev
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ filename, resourceType }),
     })
-      .then((res)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Media endpoint returned HTTP ${res.status}`)
+        return res.json() as Promise<{ url: string }>
+      })
+      .then(({ url }) => {
+        if (!cancelled) setUrlState({ status: 'ready', url })
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          console.error('[WAMediaPreview] Failed to get signed URL:', err)
+          setUrlState({ status: 'error' })
+        }
+      })
+
+    return () => { cancelled = true }
+  }, [filename, isImage, isVideo])
+
+  // ── Force Autoplay for Asynchronous Video ────────────────────────────────
+  //    Bypasses React's synthetic rendering queue to ensure the browser
+  //    sees the video as strictly muted, satisfying autoplay security policies.
+  
+  useEffect(() => {
+    if (urlState.status === 'ready' && isVideo && videoRef.current) {
+      // Force the DOM element to be muted
+      videoRef.current.defaultMuted = true
+      videoRef.current.muted = true
+
+      // Explicitly command the browser to play
+      videoRef.current.play().catch((err) => {
+        console.warn('[WAMediaPreview] Autoplay blocked by strict browser policy:', err)
+      })
+    }
+  }, [urlState, isVideo])
+
+  // ── Guard: trigger condition ─────────────────────────────────────────────
+
+  if (!filename?.startsWith('Media') || (!isImage && !isVideo)) return null
+
+  // ── Shared wrapper ────────────────────────────────────────────────────────
+
+  const wrapStyle: CSSProperties = {
+    borderTop:  '1px solid var(--border)',
+    overflow:   'hidden',
+    lineHeight: 0,
+  }
+
+  // ── Loading skeleton ─────────────────────────────────────────────────────
+
+  if (urlState.status === 'idle' || urlState.status === 'loading') {
+    return (
+      <div style={{
+        ...wrapStyle,
+        display:        'flex',
+        alignItems:     'center',
+        justifyContent: 'center',
+        minHeight:      72,
+        lineHeight:     'normal',
+        background:     'var(--border)',
+        opacity:        0.6,
+      }}>
+        <span style={{ fontSize: '.78rem', color: 'var(--muted, #888)', lineHeight: 'normal' }}>
+          Loading preview…
+        </span>
+      </div>
+    )
+  }
+
+  // ── Error: fail silently — the thumbnail row above is still visible ───────
+
+  if (urlState.status === 'error') return null
+
+  const { url } = urlState
+
+  // ── Image branch ─────────────────────────────────────────────────────────
+
+  if (isImage) {
+    return (
+      <div style={wrapStyle}>
+        <img
+          src={url}
+          alt={filename ?? ''}
+          style={{ width: '100%', height: 'auto', display: 'block', objectFit: 'cover' }}
+        />
+      </div>
+    )
+  }
+
+  // ── Video branch ─────────────────────────────────────────────────────────
+  //    key={url} forces React to remount <video> when the item changes so the
+  //    browser doesn't continue playing the previous video.
+
+  return (
+    <div style={{ ...wrapStyle, background: '#000' }}>
+      <video
+        ref={videoRef}
+        key={url}
+        src={url}
+        muted
+        defaultMuted
+        autoPlay
+        loop
+        playsInline
+        style={{ width: '100%', display: 'block', maxHeight: 420, objectFit: 'cover' }}
+      />
+    </div>
+  )
+}
