@@ -7,8 +7,8 @@
  * inside WAItemCard.
  *
  * Trigger condition (both must be true):
- *   1. The item is a WA item  — always guaranteed; WAItemCard is WA-only.
- *   2. item.filename starts with "Media".
+ * 1. The item is a WA item  — always guaranteed; WAItemCard is WA-only.
+ * 2. item.filename starts with "Media".
  *
  * ── How URLs are resolved (Dynamic Folders) ──────────────────────────────────
  *
@@ -17,25 +17,25 @@
  * This component does NOT know or construct the public_id — all of that work
  * happens server-side in /api/cloudinary/media:
  *
- *   1. Client POSTs { filename, resourceType } to /api/cloudinary/media.
+ * 1. Client POSTs { filename, resourceType } to /api/cloudinary/media.
  *
- *   2. Server strips the extension to get the filename stem, then calls
- *      findPublicId() which is wrapped in Next.js unstable_cache:
- *        • First call per stem  → live Cloudinary Search API query.
- *        • All later calls      → instant cache hit, zero API quota used.
- *      (revalidate: false means the cached public_id never auto-expires,
- *       which is correct because Cloudinary public_ids are immutable.)
+ * 2. Server strips the extension to get the filename stem, then calls
+ * findPublicId() which is wrapped in Next.js unstable_cache:
+ * • First call per stem  → live Cloudinary Search API query.
+ * • All later calls      → instant cache hit, zero API quota used.
+ * (revalidate: false means the cached public_id never auto-expires,
+ * which is correct because Cloudinary public_ids are immutable.)
  *
- *   3. Server signs the discovered public_id with CLOUDINARY_API_SECRET
- *      (type: 'authenticated', HMAC-SHA1, expires in 1 h) and returns { url }.
+ * 3. Server signs the discovered public_id with CLOUDINARY_API_SECRET
+ * (type: 'authenticated', HMAC-SHA1, expires in 1 h) and returns { url }.
  *
- *   4. Client stores the signed URL in state and renders <img> or <video>.
+ * 4. Client stores the signed URL in state and renders <img> or <video>.
  *
  * The API secret and all Cloudinary credentials never reach the browser.
  * This component holds zero knowledge of the Cloudinary folder structure.
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { CSSProperties } from 'react'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -70,6 +70,7 @@ type UrlState =
 
 export function WAMediaPreview({ filename, path, isImage, isVideo }: WAMediaPreviewProps) {
   const [urlState, setUrlState] = useState<UrlState>({ status: 'idle' })
+  const videoRef = useRef<HTMLVideoElement>(null)
 
   // ── Fetch the server-resolved, signed URL ────────────────────────────────
   //
@@ -97,92 +98,4 @@ export function WAMediaPreview({ filename, path, isImage, isVideo }: WAMediaPrev
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ filename, resourceType }),
     })
-      .then((res) => {
-        if (!res.ok) throw new Error(`Media endpoint returned HTTP ${res.status}`)
-        return res.json() as Promise<{ url: string }>
-      })
-      .then(({ url }) => {
-        if (!cancelled) setUrlState({ status: 'ready', url })
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          console.error('[WAMediaPreview] Failed to get signed URL:', err)
-          setUrlState({ status: 'error' })
-        }
-      })
-
-    return () => { cancelled = true }
-  }, [filename, isImage, isVideo])
-
-  // ── Guard: trigger condition ─────────────────────────────────────────────
-
-  if (!filename?.startsWith('Media') || (!isImage && !isVideo)) return null
-
-  // ── Shared wrapper ────────────────────────────────────────────────────────
-
-  const wrapStyle: CSSProperties = {
-    borderTop:  '1px solid var(--border)',
-    overflow:   'hidden',
-    lineHeight: 0,
-  }
-
-  // ── Loading skeleton ─────────────────────────────────────────────────────
-
-  if (urlState.status === 'idle' || urlState.status === 'loading') {
-    return (
-      <div style={{
-        ...wrapStyle,
-        display:        'flex',
-        alignItems:     'center',
-        justifyContent: 'center',
-        minHeight:      72,
-        lineHeight:     'normal',
-        background:     'var(--border)',
-        opacity:        0.6,
-      }}>
-        <span style={{ fontSize: '.78rem', color: 'var(--muted, #888)', lineHeight: 'normal' }}>
-          Loading preview…
-        </span>
-      </div>
-    )
-  }
-
-  // ── Error: fail silently — the thumbnail row above is still visible ───────
-
-  if (urlState.status === 'error') return null
-
-  const { url } = urlState
-
-  // ── Image branch ─────────────────────────────────────────────────────────
-
-  if (isImage) {
-    return (
-      <div style={wrapStyle}>
-        <img
-          src={url}
-          alt={filename ?? ''}
-          style={{ width: '100%', height: 'auto', display: 'block', objectFit: 'cover' }}
-        />
-      </div>
-    )
-  }
-
-  // ── Video branch ─────────────────────────────────────────────────────────
-  //    key={url} forces React to remount <video> when the item changes so the
-  //    browser doesn't continue playing the previous video.
-
-  return (
-    <div style={{ ...wrapStyle, background: '#000' }}>
-      <video
-        key={url}
-        src={url}
-        controls
-        muted
-        autoPlay
-        loop
-        playsInline
-        style={{ width: '100%', display: 'block', maxHeight: 420, objectFit: 'cover' }}
-      />
-    </div>
-  )
-}
+      .then((res)
