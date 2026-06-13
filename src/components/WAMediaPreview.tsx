@@ -179,7 +179,7 @@ export function WAMediaPreview({ filename, path, isImage, isVideo }: WAMediaPrev
         <img
           src={url}
           alt={filename ?? ''}
-          style={{ width: '100%', height: 'auto', display: 'block', objectFit: 'cover' }}
+          style={{ width: '100%', height: 'auto', display: 'block' }}
         />
       </div>
     )
@@ -199,7 +199,7 @@ export function WAMediaPreview({ filename, path, isImage, isVideo }: WAMediaPrev
         autoPlay
         loop
         playsInline
-        style={{ width: '100%', display: 'block', maxHeight: 420, objectFit: 'cover' }}
+        style={{ width: '100%', height: 'auto', display: 'block' }}
       />
     </div>
   )

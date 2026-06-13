@@ -109,7 +109,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   //                                  (CLI flag: -O type authenticated)
   //    sign_url:   true            — injects s--{HMAC-SHA1}-- into the URL path
   //    expires_at: <unix ts>       — embedded in the signature; tamper-proof
-  //    transformation              — images only: fill-crop to the card slot
+  //    transformation              — limit to 960 px wide while preserving the
+  //                                  original aspect ratio (no height cap, no crop)
 
   cloudinary.config({ cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret, secure: true })
 
@@ -122,9 +123,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       sign_url:      true,
       expires_at:    expiresAt,
       secure:        true,
-      ...(resourceType === 'image' && {
-        transformation: [{ crop: 'fill', width: 960, height: 720 }],
-      }),
+      transformation: [{ crop: 'limit', width: 960 }],
     })
 
     return NextResponse.json(
