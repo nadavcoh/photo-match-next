@@ -179,7 +179,6 @@ export function WAMediaPreview({ filename, path, isImage, isVideo }: WAMediaPrev
         muted
         autoPlay
         loop
-        playsInline
         style={{ width: '100%', display: 'block', maxHeight: 420, objectFit: 'cover' }}
       />
     </div>
