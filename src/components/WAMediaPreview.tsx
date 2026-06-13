@@ -196,7 +196,6 @@ export function WAMediaPreview({ filename, path, isImage, isVideo }: WAMediaPrev
         key={url}
         src={url}
         muted
-        defaultMuted
         autoPlay
         loop
         playsInline
