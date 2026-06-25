@@ -9,11 +9,11 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3",
+    "@aws-sdk/s3-request-presigner": "^3",
     "@supabase/ssr": "^0.6.1",
     "@supabase/supabase-js": "^2",
-    "cloudinary": "^2",
     "next": "^15.3.2",
-    "next-cloudinary": "^6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "sharp": "^0.33.5"
