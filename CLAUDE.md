@@ -167,6 +167,29 @@ before), it needs to be repointed at B2.
   from Supabase Storage via signed URLs now (see `SignedImage` in
   `page.tsx`); there is no `/api/thumbnail` route in this codebase.
 
+## Video matching: H: vs T: distances are not the same kind of number
+
+`match_hashes_video`/`match_partner_video` (in `supabase-rls-and-rpc.sql`)
+return **two** distances per video candidate, and they are not interchangeable:
+
+- `thumb_hamming` (**T:** badge) — WA item's `video_thumb_hash_bit` vs. the
+  candidate's `video_thumb_hash_bit`. Thumb-vs-thumb — this is the
+  semantically meaningful "are these the same video" distance.
+- `hamming` (**H:** badge) — WA item's `video_thumb_hash_bit` vs. the
+  candidate's `hash_bit` (the *image*-hash column). This is comparing two
+  different hash spaces and is only used to widen the candidate net (the SQL
+  unions top-50-by-thumb with top-50-by-image-hash, then keeps a row if
+  *either* distance clears the threshold). For true matches this number is
+  typically large/near-random (~half of 64 bits) — **that's expected, not a
+  bug.** Don't color-code or threshold on it for videos.
+
+`page.tsx`'s `CandidateCard` reflects this: `hammingClass()` (the
+good/ok/bad color) is applied to `thumb_hamming` for video candidates and to
+`hamming` for image candidates, via the `isVideo` prop passed down from the
+WA item's filetype. If distances look "always huge," check which badge
+(H: vs T:) is actually being read before assuming the pHash pipeline is
+broken.
+
 ## Things to double check before assuming they're still true
 
 - The hardcoded allowed email (`Cohen.n@gmail.com`) in `middleware.ts` —
