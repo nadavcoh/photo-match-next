@@ -18,6 +18,7 @@ export interface WAItem {
   hash_bit: string | null
   video_thumb_hash_bit: string | null
   timestamp: string | null
+  duration: number | null
   /**
    * Supabase Storage object path (e.g. "wa/008000/wa_8402.jpg").
    * Pass to <SignedImage storagePath={...}> or to

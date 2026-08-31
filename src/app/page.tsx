@@ -34,6 +34,14 @@ function fmtFilesize(s: string | null | undefined): string {
   return s.match(/\(([^)]+)\)/)?.[1] ?? s
 }
 
+function fmtDuration(seconds: number | null | undefined): string {
+  if (seconds == null || !isFinite(seconds) || seconds < 0) return ''
+  const total = Math.round(seconds)
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
 function hammingClass(d: number | null | undefined): '' | 'good' | 'ok' | 'bad' {
   if (d == null) return ''
   if (d <= 5)  return 'good'
@@ -174,13 +182,22 @@ interface CandidateCardProps {
   isSelected: boolean
   isAuto: boolean
   isPartnerOnly: boolean
+  isVideo: boolean
 }
 
-function CandidateCard({ c, isSelected, isAuto, isPartnerOnly }: CandidateCardProps): JSX.Element {
+function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, isVideo }: CandidateCardProps): JSX.Element {
   const hDist = c.hamming
   const tDist = c.thumb_hamming
-  const hVariant = hammingClass(hDist)
   const isPartner = c.source === 'partner'
+
+  // For videos, `hamming` (H:) is the WA item's video-thumbnail hash compared
+  // against the candidate's *image* hash_bit column — a different hash space
+  // used only to widen the candidate net (see match_hashes_video/
+  // match_partner_video SQL). It's expected to look large/random for videos
+  // and should NOT be color-coded as good/bad. `thumb_hamming` (T:) — thumb
+  // vs. thumb — is the metric that's actually comparable for videos.
+  const primaryDist = isVideo ? tDist : hDist
+  const primaryVariant = hammingClass(primaryDist)
 
   return (
     <div style={{
@@ -220,8 +237,12 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly }: CandidateCardPr
             {isPartner ? 'Partner' : 'Hashes'}
           </SmallBadge>
           {'origin' in c && c.origin && <SmallBadge>{String(c.origin)}</SmallBadge>}
-          {hDist != null && <SmallBadge variant={hVariant || undefined}>H:{hDist}</SmallBadge>}
-          {tDist != null && <SmallBadge>T:{tDist}</SmallBadge>}
+          {hDist != null && (
+            <SmallBadge variant={(!isVideo && primaryVariant) || undefined}>H:{hDist}</SmallBadge>
+          )}
+          {tDist != null && (
+            <SmallBadge variant={(isVideo && primaryVariant) || undefined}>T:{tDist}</SmallBadge>
+          )}
           {'pixel_dist' in c && c.pixel_dist != null && (
             <SmallBadge variant={c.pixel_dist <= 5 ? 'good' : c.pixel_dist <= 15 ? 'ok' : 'bad'}>
               Px:{c.pixel_dist}
@@ -235,7 +256,7 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly }: CandidateCardPr
           )}
         </div>
         <div style={{ fontSize: '.6rem', color: 'var(--muted)' }}>
-          {[fmtDate(c.timestamp), c.size, fmtFilesize('filesize' in c ? c.filesize : null)].filter(Boolean).join(' · ')}
+          {[fmtDate(c.timestamp), fmtDuration(c.duration), c.size, fmtFilesize('filesize' in c ? c.filesize : null)].filter(Boolean).join(' · ')}
         </div>
         {c.url && (
           <div style={{ fontSize: '.6rem', marginTop: 2 }}>
@@ -434,6 +455,7 @@ function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoi
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
             {ftBadge}
             {ts && <SmallBadge>{ts}</SmallBadge>}
+            {isVideo && item.duration != null && <SmallBadge>⏱ {fmtDuration(item.duration)}</SmallBadge>}
             <SmallBadge>#{item.id}</SmallBadge>
           </div>
         </div>
@@ -663,6 +685,7 @@ export default function Home(): JSX.Element {
     ...(data?.candidates ?? []),
     ...(showPartner ? (data?.partner_candidates ?? []) : []),
   ]
+  const itemIsVideo = (item?.filetype ?? '').toLowerCase().includes('video')
 
   return (
     <>
@@ -776,7 +799,7 @@ export default function Home(): JSX.Element {
                   const isAuto      = autoSelectId === c.id && c.source === 'hashes' && selectedId === null
                   return (
                     <div key={`${c.source}-${c.id}`} data-candidate-id={c.id} onClick={() => handleCandidateClick(c)}>
-                      <CandidateCard c={c} isSelected={isSelected} isAuto={isAuto} isPartnerOnly={c.source === 'partner'} />
+                      <CandidateCard c={c} isSelected={isSelected} isAuto={isAuto} isPartnerOnly={c.source === 'partner'} isVideo={itemIsVideo} />
                     </div>
                   )
                 })}

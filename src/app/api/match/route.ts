@@ -296,7 +296,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // ── Fetch item at offset ───────────────────────────────────────────────
     const { data: waRows, error: waError } = await supabase
       .from('wa')
-      .select('id, filename, filetype, hash_bit, video_thumb_hash_bit, timestamp')
+      .select('id, filename, filetype, hash_bit, video_thumb_hash_bit, timestamp, duration')
       .is('id_hash', null)
       .is('processed', null)
       .order('timestamp', { ascending: false })
@@ -318,6 +318,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       hash_bit: string | null
       video_thumb_hash_bit: string | null
       timestamp: string | null
+      duration: number | null
     }
 
     const waItem: WAItem = {
@@ -327,6 +328,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       hash_bit:             waRow.hash_bit,
       video_thumb_hash_bit: waRow.video_thumb_hash_bit,
       timestamp:            isoOrNull(waRow.timestamp),
+      duration:             waRow.duration ?? null,
       thumbnail_url:        thumbnailUrl('wa', waRow.id),
     }
 
