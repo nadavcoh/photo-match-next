@@ -71,8 +71,8 @@ interface HashesRpcRow {
   filesize: string | null
   origin: string | null
   duration: number | null
-  hamming: number            // hash_bit distance
-  thumb_hamming: number | null // video_thumb_hash_bit distance (null for images)
+  hamming: number | null       // videohash2-to-videohash2 distance (video rows only); always set for image matching
+  thumb_hamming: number | null // first-frame distance (thumb-to-thumb, or thumb-to-hash_bit for image/GIF candidates)
 }
 
 interface PartnerRpcRow {
@@ -82,7 +82,7 @@ interface PartnerRpcRow {
   url: string | null
   size: string | null
   duration: number | null
-  hamming: number
+  hamming: number | null
   thumb_hamming: number | null
 }
 
@@ -123,12 +123,16 @@ async function fetchHashesCandidates(
     }))
   }
 
-  // Video: match by video_thumb_hash_bit, falling back to hash_bit
-  const searchBit = waItem.video_thumb_hash_bit ?? waItem.hash_bit
-  if (!searchBit) return []
+  // Video: hash_bit (videohash2) and video_thumb_hash_bit (first-frame
+  // imagehash) are independent hash spaces and are compared to their own
+  // counterpart column on the candidate row — never crossed. See
+  // match_hashes_video in supabase-rls-and-rpc.sql for the exact rules,
+  // including the GIF-as-image edge case.
+  if (!waItem.hash_bit && !waItem.video_thumb_hash_bit) return []
 
   const { data, error } = await supabase.rpc('match_hashes_video', {
-    p_search_bit: searchBit,
+    p_hash_bit: waItem.hash_bit,
+    p_thumb_bit: waItem.video_thumb_hash_bit,
     p_threshold: threshold,
   })
   if (error || !data) return []
@@ -183,11 +187,11 @@ async function fetchPartnerCandidates(
     }))
   }
 
-  const searchBit = waItem.video_thumb_hash_bit ?? waItem.hash_bit
-  if (!searchBit) return []
+  if (!waItem.hash_bit && !waItem.video_thumb_hash_bit) return []
 
   const { data, error } = await supabase.rpc('match_partner_video', {
-    p_search_bit: searchBit,
+    p_hash_bit: waItem.hash_bit,
+    p_thumb_bit: waItem.video_thumb_hash_bit,
     p_threshold: threshold,
   })
   if (error || !data) return []
@@ -243,8 +247,8 @@ function computeAutoSelect(
           return ts && daysBetween(waTs, ts) < 30
         })
         if (recent.length > 0) {
-          const minH = Math.min(...recent.map((c) => c.hamming))
-          const best = recent.filter((c) => c.hamming === minH)
+          const minH = Math.min(...recent.map((c) => c.hamming ?? 999))
+          const best = recent.filter((c) => (c.hamming ?? 999) === minH)
           if (best.length === 1) return best[0].id
         }
       }

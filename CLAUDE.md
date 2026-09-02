@@ -167,28 +167,36 @@ before), it needs to be repointed at B2.
   from Supabase Storage via signed URLs now (see `SignedImage` in
   `page.tsx`); there is no `/api/thumbnail` route in this codebase.
 
-## Video matching: H: vs T: distances are not the same kind of number
+## Video hashing: two independent hash spaces, never cross-compared
 
+Video hashing uses two different sources, and each side of a comparison must
+be the *same* hash type — never mix them:
+
+- `hash_bit` — whole-video hash from the `videohash2` Python package.
+  Imperfect on its own (source of the second hash below).
+- `video_thumb_hash_bit` — `imagehash` hash of the video's first frame.
+
+Both `wa` and `hashes`/`partner` store both columns for genuine video rows.
 `match_hashes_video`/`match_partner_video` (in `supabase-rls-and-rpc.sql`)
-return **two** distances per video candidate, and they are not interchangeable:
+compare `wa.hash_bit` only to the candidate's `hash_bit` (**H:** badge), and
+`wa.video_thumb_hash_bit` only to the candidate's `video_thumb_hash_bit`
+(**T:** badge) — two separate distances, never crossed. Candidate generation
+still casts a wide net (top-50 per usable comparison, unioned) and keeps a
+row if *either* clears `HAMMING_THRESHOLD`.
 
-- `thumb_hamming` (**T:** badge) — WA item's `video_thumb_hash_bit` vs. the
-  candidate's `video_thumb_hash_bit`. Thumb-vs-thumb — this is the
-  semantically meaningful "are these the same video" distance.
-- `hamming` (**H:** badge) — WA item's `video_thumb_hash_bit` vs. the
-  candidate's `hash_bit` (the *image*-hash column). This is comparing two
-  different hash spaces and is only used to widen the candidate net (the SQL
-  unions top-50-by-thumb with top-50-by-image-hash, then keeps a row if
-  *either* distance clears the threshold). For true matches this number is
-  typically large/near-random (~half of 64 bits) — **that's expected, not a
-  bug.** Don't color-code or threshold on it for videos.
+**Edge case — GIFs:** an animated GIF lives in `hashes`/`partner` as a plain
+image row (`imagehash` of frame 1, `video_thumb_hash_bit` is NULL), but gets
+transcoded to MP4 on the `wa` side. There's no dedicated GIF handling — when
+a candidate row has no `video_thumb_hash_bit`, its `hash_bit` is treated as
+directly comparable to `wa.video_thumb_hash_bit` (both are "first frame"
+hashes) and reported as `thumb_hamming`/**T:**. `hamming`/**H:** is NULL for
+these rows since there's no video hash on that side to compare.
 
-`page.tsx`'s `CandidateCard` reflects this: `hammingClass()` (the
-good/ok/bad color) is applied to `thumb_hamming` for video candidates and to
-`hamming` for image candidates, via the `isVideo` prop passed down from the
-WA item's filetype. If distances look "always huge," check which badge
-(H: vs T:) is actually being read before assuming the pHash pipeline is
-broken.
+`page.tsx`'s `CandidateCard` colors H:/T: for videos on a simple 2-tier
+green/grey scale (`lowDistanceVariant` — green when clearly close, grey
+otherwise; no yellow/red) since the two hash types aren't calibrated against
+each other the way image `hash_bit` distances are. Image candidates keep the
+3-tier good/ok/bad `hammingClass()` coloring on H:, and never show T:.
 
 ## Things to double check before assuming they're still true
 

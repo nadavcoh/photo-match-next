@@ -138,16 +138,36 @@ $$;
 
 -- 4b. Video matching — hashes table ─────────────────────────────────────────
 --
--- Mirrors the original TypeScript logic:
---   1. Take top-50 by video_thumb_hash_bit distance.
---   2. Take top-50 by hash_bit distance.
---   3. Union their IDs (DISTINCT).
---   4. For each candidate compute BOTH distances.
---   5. Keep rows where EITHER distance <= threshold.
+-- Video hashes come from two different pipelines that must not be crossed:
+--   • hash_bit             — whole-video hash from the `videohash2` package.
+--                            Only comparable to another row's hash_bit when
+--                            that row is ALSO a video (imperfect on its own,
+--                            hence the second hash below).
+--   • video_thumb_hash_bit — imagehash of the video's first frame. Only
+--                            comparable to another row's video_thumb_hash_bit
+--                            (video-to-video) OR, when the candidate row has
+--                            no video_thumb_hash_bit at all, to that row's
+--                            plain hash_bit. That NULL case covers animated
+--                            GIFs: they live in `hashes`/`partner` as image
+--                            rows (imagehash of frame 1, no video columns),
+--                            but get transcoded to MP4 on the `wa` side, so
+--                            wa's thumb hash is the only thing comparable to
+--                            them. No GIF-specific detection needed — a plain
+--                            photo just won't have a close-enough hash.
+--
+-- Candidate generation still casts a wide net (top-50 per usable comparison,
+-- unioned) and then keeps a row if ANY one of its usable comparisons clears
+-- the threshold.
+--
+-- `hamming` is NULL whenever a video_bit-to-video_bit comparison isn't
+-- possible (missing input hash, or the candidate is an image-type row).
+-- `thumb_hamming` covers both the real thumb-to-thumb case and the
+-- GIF-as-image edge case described above.
 
 CREATE OR REPLACE FUNCTION public.match_hashes_video(
-  p_search_bit text,
-  p_threshold  integer
+  p_hash_bit  text,
+  p_thumb_bit text,
+  p_threshold integer
 )
 RETURNS TABLE (
   id            integer,
@@ -161,8 +181,9 @@ RETURNS TABLE (
   filesize      text,
   origin        text,
   duration      integer,
-  hamming       integer,      -- hash_bit distance
-  thumb_hamming integer       -- video_thumb_hash_bit distance
+  hamming       integer,      -- hash_bit (videohash2) distance; video rows only
+  thumb_hamming integer       -- first-frame distance (video_thumb_hash_bit, or
+                               -- hash_bit for image-type/GIF candidates)
 )
 LANGUAGE sql
 STABLE
@@ -171,12 +192,23 @@ SET search_path = public, extensions
 AS $$
   WITH candidate_ids AS (
     SELECT DISTINCT id FROM (
+      -- video-type candidates, widened via their own videohash2 hash
       (SELECT id FROM public.hashes
-       ORDER BY video_thumb_hash_bit <~> p_search_bit::bit(64)
+       WHERE p_hash_bit IS NOT NULL AND video_thumb_hash_bit IS NOT NULL
+       ORDER BY hash_bit <~> p_hash_bit::bit(64)
        LIMIT 50)
       UNION ALL
+      -- video-type candidates, widened via their own thumb hash
       (SELECT id FROM public.hashes
-       ORDER BY hash_bit <~> p_search_bit::bit(64)
+       WHERE p_thumb_bit IS NOT NULL AND video_thumb_hash_bit IS NOT NULL
+       ORDER BY video_thumb_hash_bit <~> p_thumb_bit::bit(64)
+       LIMIT 50)
+      UNION ALL
+      -- image-type candidates (plain photos, and GIFs-as-images): only
+      -- comparable via wa's thumb hash vs their sole hash_bit
+      (SELECT id FROM public.hashes
+       WHERE p_thumb_bit IS NOT NULL AND video_thumb_hash_bit IS NULL
+       ORDER BY hash_bit <~> p_thumb_bit::bit(64)
        LIMIT 50)
     ) combined
   )
@@ -186,19 +218,30 @@ AS $$
     h.camera_name,
     h.location,
     h.location_name,
-    h.timestamp                                              AS ts,
+    h.timestamp AS ts,
     h.url,
     h.size,
     h.filesize,
     h.origin,
     h.duration,
-    (h.hash_bit             <~> p_search_bit::bit(64))::integer AS hamming,
-    (h.video_thumb_hash_bit <~> p_search_bit::bit(64))::integer AS thumb_hamming
+    CASE WHEN h.video_thumb_hash_bit IS NOT NULL AND p_hash_bit IS NOT NULL
+      THEN (h.hash_bit <~> p_hash_bit::bit(64))::integer
+    END AS hamming,
+    CASE
+      WHEN h.video_thumb_hash_bit IS NOT NULL AND p_thumb_bit IS NOT NULL
+        THEN (h.video_thumb_hash_bit <~> p_thumb_bit::bit(64))::integer
+      WHEN h.video_thumb_hash_bit IS NULL AND p_thumb_bit IS NOT NULL
+        THEN (h.hash_bit <~> p_thumb_bit::bit(64))::integer
+    END AS thumb_hamming
   FROM public.hashes h
   JOIN candidate_ids c ON h.id = c.id
   WHERE
-       (h.hash_bit             <~> p_search_bit::bit(64))::integer <= p_threshold
-    OR (h.video_thumb_hash_bit <~> p_search_bit::bit(64))::integer <= p_threshold;
+       (h.video_thumb_hash_bit IS NOT NULL AND p_hash_bit IS NOT NULL
+          AND (h.hash_bit <~> p_hash_bit::bit(64))::integer <= p_threshold)
+    OR (h.video_thumb_hash_bit IS NOT NULL AND p_thumb_bit IS NOT NULL
+          AND (h.video_thumb_hash_bit <~> p_thumb_bit::bit(64))::integer <= p_threshold)
+    OR (h.video_thumb_hash_bit IS NULL AND p_thumb_bit IS NOT NULL
+          AND (h.hash_bit <~> p_thumb_bit::bit(64))::integer <= p_threshold);
 $$;
 
 
@@ -240,10 +283,12 @@ $$;
 
 
 -- 4d. Video matching — partner table ─────────────────────────────────────────
+-- Same hash-type-to-hash-type rules as match_hashes_video (see its comment).
 
 CREATE OR REPLACE FUNCTION public.match_partner_video(
-  p_search_bit text,
-  p_threshold  integer
+  p_hash_bit  text,
+  p_thumb_bit text,
+  p_threshold integer
 )
 RETURNS TABLE (
   id            integer,
@@ -263,28 +308,46 @@ AS $$
   WITH candidate_ids AS (
     SELECT DISTINCT id FROM (
       (SELECT id FROM public.partner
-       ORDER BY video_thumb_hash_bit <~> p_search_bit::bit(64)
+       WHERE p_hash_bit IS NOT NULL AND video_thumb_hash_bit IS NOT NULL
+       ORDER BY hash_bit <~> p_hash_bit::bit(64)
        LIMIT 50)
       UNION ALL
       (SELECT id FROM public.partner
-       ORDER BY hash_bit <~> p_search_bit::bit(64)
+       WHERE p_thumb_bit IS NOT NULL AND video_thumb_hash_bit IS NOT NULL
+       ORDER BY video_thumb_hash_bit <~> p_thumb_bit::bit(64)
+       LIMIT 50)
+      UNION ALL
+      (SELECT id FROM public.partner
+       WHERE p_thumb_bit IS NOT NULL AND video_thumb_hash_bit IS NULL
+       ORDER BY hash_bit <~> p_thumb_bit::bit(64)
        LIMIT 50)
     ) combined
   )
   SELECT
     p.id,
     p.filename,
-    p.timestamp                                              AS ts,
+    p.timestamp AS ts,
     p.url,
     p.size,
     p.duration,
-    (p.hash_bit             <~> p_search_bit::bit(64))::integer AS hamming,
-    (p.video_thumb_hash_bit <~> p_search_bit::bit(64))::integer AS thumb_hamming
+    CASE WHEN p.video_thumb_hash_bit IS NOT NULL AND p_hash_bit IS NOT NULL
+      THEN (p.hash_bit <~> p_hash_bit::bit(64))::integer
+    END AS hamming,
+    CASE
+      WHEN p.video_thumb_hash_bit IS NOT NULL AND p_thumb_bit IS NOT NULL
+        THEN (p.video_thumb_hash_bit <~> p_thumb_bit::bit(64))::integer
+      WHEN p.video_thumb_hash_bit IS NULL AND p_thumb_bit IS NOT NULL
+        THEN (p.hash_bit <~> p_thumb_bit::bit(64))::integer
+    END AS thumb_hamming
   FROM public.partner p
   JOIN candidate_ids c ON p.id = c.id
   WHERE
-       (p.hash_bit             <~> p_search_bit::bit(64))::integer <= p_threshold
-    OR (p.video_thumb_hash_bit <~> p_search_bit::bit(64))::integer <= p_threshold;
+       (p.video_thumb_hash_bit IS NOT NULL AND p_hash_bit IS NOT NULL
+          AND (p.hash_bit <~> p_hash_bit::bit(64))::integer <= p_threshold)
+    OR (p.video_thumb_hash_bit IS NOT NULL AND p_thumb_bit IS NOT NULL
+          AND (p.video_thumb_hash_bit <~> p_thumb_bit::bit(64))::integer <= p_threshold)
+    OR (p.video_thumb_hash_bit IS NULL AND p_thumb_bit IS NOT NULL
+          AND (p.hash_bit <~> p_thumb_bit::bit(64))::integer <= p_threshold);
 $$;
 
 
@@ -292,11 +355,20 @@ $$;
 --
 -- PostgREST calls RPC functions under the authenticated role. Without an
 -- explicit GRANT the call will fail with "permission denied for function …".
+--
+-- match_hashes_video/match_partner_video changed signature (p_search_bit →
+-- p_hash_bit, p_thumb_bit) when video/thumb hashes were split into
+-- independent comparisons. CREATE OR REPLACE can't change a function's
+-- argument list, so the old 2-arg overloads are dropped explicitly here —
+-- otherwise they'd linger as dead, still-callable functions.
 
-GRANT EXECUTE ON FUNCTION public.match_hashes_image(text, integer)  TO authenticated;
-GRANT EXECUTE ON FUNCTION public.match_hashes_video(text, integer)  TO authenticated;
-GRANT EXECUTE ON FUNCTION public.match_partner_image(text, integer) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.match_partner_video(text, integer) TO authenticated;
+DROP FUNCTION IF EXISTS public.match_hashes_video(text, integer);
+DROP FUNCTION IF EXISTS public.match_partner_video(text, integer);
+
+GRANT EXECUTE ON FUNCTION public.match_hashes_image(text, integer)        TO authenticated;
+GRANT EXECUTE ON FUNCTION public.match_hashes_video(text, text, integer)  TO authenticated;
+GRANT EXECUTE ON FUNCTION public.match_partner_image(text, integer)       TO authenticated;
+GRANT EXECUTE ON FUNCTION public.match_partner_video(text, text, integer) TO authenticated;
 
 
 -- ─── Verification queries (run separately to check) ──────────────────────────

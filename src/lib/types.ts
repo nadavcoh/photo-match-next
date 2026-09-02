@@ -39,7 +39,14 @@ export interface HashCandidate {
   filesize: string | null
   origin: string | null
   duration: number | null
-  hamming: number
+  /** videohash2-to-videohash2 distance. Null when not comparable (image
+   * matching always sets this; video matching sets it only when the
+   * candidate is itself a video row — see match_hashes_video). */
+  hamming: number | null
+  /** First-frame distance: video_thumb_hash_bit-to-video_thumb_hash_bit for
+   * video candidates, or wa's thumb hash vs. the candidate's plain hash_bit
+   * for image-type candidates (covers GIFs transcoded to MP4 on the wa
+   * side). Null for image-vs-image matching. */
   thumb_hamming: number | null
   pixel_dist: number | null
   /** Supabase Storage object path — see WAItem.thumbnail_url. */
@@ -54,7 +61,7 @@ export interface PartnerCandidate {
   url: string | null
   size: string | null
   duration: number | null
-  hamming: number
+  hamming: number | null
   thumb_hamming: number | null
   pixel_dist: number | null
   /** Supabase Storage object path — see WAItem.thumbnail_url. */
