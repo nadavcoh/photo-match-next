@@ -167,6 +167,43 @@ before), it needs to be repointed at B2.
   from Supabase Storage via signed URLs now (see `SignedImage` in
   `page.tsx`); there is no `/api/thumbnail` route in this codebase.
 
+## Duration/resolution/filesize badges: `wa` schema constrains what's possible
+
+`wa`'s actual columns (confirmed from `table_wa.txt`): `id`, `filename`,
+`timestamp`, `id_hash`, `processed`, `filetype`, `duration`, `hash_bit`,
+`video_thumb_hash_bit`. **No `size` or `filesize` column** — so there's no
+`wa`-side reference value to compare a candidate's resolution or file size
+against. This shapes the three badges differently:
+
+- **⏱ Duration** — `wa.duration` exists, so this stays a relative
+  comparison: `closenessVariant(c.duration, waDuration)` in `page.tsx`
+  (green within 5%, yellow within 25%, red beyond, grey if either side is
+  missing).
+- **Resolution** (`c.size`, e.g. `"1920x1080"`) — no `wa` reference
+  available, so this uses **absolute** thresholds instead
+  (`resolutionVariant` in `page.tsx`):
+  - Video, by short side (orientation-independent): ≥1080px → green
+    (1080p+), ≥720px → yellow (720p), below → red (<720p).
+  - Image, by total megapixels: ≥8MP → green (full smartphone-camera
+    resolution), ≥1.5MP → yellow (WhatsApp "HD" quality range), below →
+    red (WhatsApp default/low-res compression).
+  - These cutoffs are a judgment call, not a spec from WhatsApp/phone
+    vendors — tune the constants in `resolutionVariant` if real-world
+    candidates cluster differently.
+- **Filesize** (`c.filesize`) — same absolute-threshold philosophy as
+  resolution, applied to bytes instead of pixels (`filesizeVariant` in
+  `page.tsx`, parsed via `parseFileSizeBytes`):
+  - Video: ≥8MB → green, ≥1MB → yellow, below → red.
+  - Image: ≥2MB → green, ≥200KB → yellow, below → red.
+  - These are a rough proxy for the same three tiers as resolution (full
+    capture / WhatsApp HD / WhatsApp default), not a measured mapping —
+    tune them if real files land somewhere unexpected. Only `hashes`
+    candidates have this field at all — `partner` never selects it.
+
+`WAItemCard` only ever shows `wa`'s own `duration` badge (uncolored, it's
+the reference point) — no size/filesize badges there since `wa` has neither
+column.
+
 ## Video hashing: two independent hash spaces, never cross-compared
 
 Video hashing uses two different sources, and each side of a comparison must
@@ -198,11 +235,13 @@ directly comparable to `wa.video_thumb_hash_bit` (both are "first frame"
 hashes) and reported as `thumb_hamming`/**T:**. `hamming`/**H:** is NULL for
 these rows since there's no video hash on that side to compare.
 
-`page.tsx`'s `CandidateCard` colors H:/T: for videos on a simple 2-tier
-green/grey scale (`lowDistanceVariant` — green when clearly close, grey
-otherwise; no yellow/red) since the two hash types aren't calibrated against
-each other the way image `hash_bit` distances are. Image candidates keep the
-3-tier good/ok/bad `hammingClass()` coloring on H:, and never show T:.
+`page.tsx`'s `CandidateCard` colors **H:** with the full 3-tier good/ok/bad
+`hammingClass()` for both images and videos — it's only ever populated for a
+genuine same-hash-type comparison (video-to-video or image-to-image), so the
+usual scale applies. **T:** (first-frame hash) keeps the simpler 2-tier
+green/grey `lowDistanceVariant` for video candidates, since it can be either
+a true thumb-to-thumb comparison or the GIF-as-image fallback, and those
+aren't calibrated the same way. Image candidates never show T:.
 
 ## Things to double check before assuming they're still true
 
