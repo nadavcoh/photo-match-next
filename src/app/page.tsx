@@ -49,6 +49,16 @@ function hammingClass(d: number | null | undefined): '' | 'good' | 'ok' | 'bad' 
   return 'bad'
 }
 
+// Video H:/T: distances come from two hash spaces that were never designed
+// to sit on the same good/ok/bad scale (videohash2 vs. imagehash-on-first-
+// frame), so they get a simpler 2-tier treatment: green when clearly close,
+// otherwise neutral grey — no yellow/red implying "bad" for what may just be
+// a differently-scaled hash.
+function lowDistanceVariant(d: number | null | undefined): '' | 'good' {
+  if (d == null) return ''
+  return d <= 5 ? 'good' : ''
+}
+
 async function apiFetch<T>(url: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(url, opts)
   if (!res.ok) {
@@ -190,14 +200,14 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, isVideo }: Candid
   const tDist = c.thumb_hamming
   const isPartner = c.source === 'partner'
 
-  // For videos, `hamming` (H:) is the WA item's video-thumbnail hash compared
-  // against the candidate's *image* hash_bit column — a different hash space
-  // used only to widen the candidate net (see match_hashes_video/
-  // match_partner_video SQL). It's expected to look large/random for videos
-  // and should NOT be color-coded as good/bad. `thumb_hamming` (T:) — thumb
-  // vs. thumb — is the metric that's actually comparable for videos.
-  const primaryDist = isVideo ? tDist : hDist
-  const primaryVariant = hammingClass(primaryDist)
+  // Videos: H (videohash2-to-videohash2) and T (first-frame hash) are two
+  // independent, differently-scaled comparisons — color each on its own
+  // 2-tier green/grey scale (see lowDistanceVariant). H is null whenever the
+  // candidate isn't itself a video row (nothing to compare against).
+  // Images: H is a single well-calibrated imagehash distance — keep the
+  // familiar 3-tier good/ok/bad coloring; T never applies here.
+  const hVariant = isVideo ? lowDistanceVariant(hDist) : hammingClass(hDist)
+  const tVariant = isVideo ? lowDistanceVariant(tDist) : ''
 
   return (
     <div style={{
@@ -238,10 +248,10 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, isVideo }: Candid
           </SmallBadge>
           {'origin' in c && c.origin && <SmallBadge>{String(c.origin)}</SmallBadge>}
           {hDist != null && (
-            <SmallBadge variant={(!isVideo && primaryVariant) || undefined}>H:{hDist}</SmallBadge>
+            <SmallBadge variant={hVariant || undefined}>H:{hDist}</SmallBadge>
           )}
           {tDist != null && (
-            <SmallBadge variant={(isVideo && primaryVariant) || undefined}>T:{tDist}</SmallBadge>
+            <SmallBadge variant={tVariant || undefined}>T:{tDist}</SmallBadge>
           )}
           {'pixel_dist' in c && c.pixel_dist != null && (
             <SmallBadge variant={c.pixel_dist <= 5 ? 'good' : c.pixel_dist <= 15 ? 'ok' : 'bad'}>
