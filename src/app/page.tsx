@@ -42,6 +42,78 @@ function fmtDuration(seconds: number | null | undefined): string {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
+// Absolute resolution thresholds — not a comparison to the wa item, since
+// wa has no size/resolution column of its own (see table_wa.txt: only
+// duration, hash_bit, video_thumb_hash_bit exist there). Tune these
+// constants if the actual capture/compression pipeline differs.
+//   Video   — classified by short side (orientation-independent):
+//               ≥1080 px → 1080p+, ≥720 px → 720p, else <720p
+//   Image   — classified by total megapixels:
+//               ≥8MP → full smartphone-camera resolution
+//               ≥1.5MP → WhatsApp "HD" quality range
+//               below that → WhatsApp default/low-res compression
+function resolutionVariant(sizeStr: string | null | undefined, isVideo: boolean): '' | 'good' | 'ok' | 'bad' {
+  const m = sizeStr?.match(/(\d+)\s*[x×]\s*(\d+)/i)
+  if (!m) return ''
+  const w = parseInt(m[1], 10)
+  const h = parseInt(m[2], 10)
+  if (!w || !h) return ''
+
+  if (isVideo) {
+    const shortSide = Math.min(w, h)
+    if (shortSide >= 1080) return 'good'
+    if (shortSide >= 720)  return 'ok'
+    return 'bad'
+  }
+
+  const megapixels = (w * h) / 1_000_000
+  if (megapixels >= 8)   return 'good'
+  if (megapixels >= 1.5) return 'ok'
+  return 'bad'
+}
+
+function parseFileSizeBytes(s: string | null | undefined): number | null {
+  const display = fmtFilesize(s)
+  const m = display.match(/([\d.]+)\s*(B|KB|MB|GB|TB)\b/i)
+  if (!m) return null
+  const n = parseFloat(m[1])
+  const mult: Record<string, number> = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 }
+  return n * (mult[m[2].toUpperCase()] ?? 1)
+}
+
+// Same tiering philosophy as resolutionVariant, applied to file size instead
+// of pixel dimensions — same absolute-threshold reasoning applies (no wa
+// reference to compare against). These byte cutoffs are a rough proxy for
+// the resolution tiers (full-quality capture vs. WhatsApp HD vs. WhatsApp
+// default/low-res compression) — tune them if real files cluster elsewhere.
+const MB = 1024 * 1024
+function filesizeVariant(sizeStr: string | null | undefined, isVideo: boolean): '' | 'good' | 'ok' | 'bad' {
+  const bytes = parseFileSizeBytes(sizeStr)
+  if (bytes == null) return ''
+
+  if (isVideo) {
+    if (bytes >= 8 * MB) return 'good' // roughly 1080p+ territory
+    if (bytes >= 1 * MB) return 'ok'   // roughly 720p / WhatsApp-compressed
+    return 'bad'
+  }
+
+  if (bytes >= 2 * MB)   return 'good' // full smartphone-camera photo
+  if (bytes >= 0.2 * MB) return 'ok'   // WhatsApp "HD" quality range
+  return 'bad'                          // WhatsApp default/low-res compression
+}
+
+// "How close is this candidate's duration to the WA item's own duration" —
+// wa does have a duration column, so this stays a relative comparison.
+// Green when very close, yellow when in the same ballpark, red when clearly
+// different. Returns '' (neutral grey) when either side is missing.
+function closenessVariant(candidate: number | null, wa: number | null): '' | 'good' | 'ok' | 'bad' {
+  if (candidate == null || wa == null || wa === 0) return ''
+  const deviation = Math.abs(candidate / wa - 1)
+  if (deviation <= 0.05) return 'good'
+  if (deviation <= 0.25) return 'ok'
+  return 'bad'
+}
+
 function hammingClass(d: number | null | undefined): '' | 'good' | 'ok' | 'bad' {
   if (d == null) return ''
   if (d <= 5)  return 'good'
@@ -193,21 +265,25 @@ interface CandidateCardProps {
   isAuto: boolean
   isPartnerOnly: boolean
   isVideo: boolean
+  waDuration: number | null
 }
 
-function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, isVideo }: CandidateCardProps): JSX.Element {
+function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, isVideo, waDuration }: CandidateCardProps): JSX.Element {
   const hDist = c.hamming
   const tDist = c.thumb_hamming
   const isPartner = c.source === 'partner'
+  const cFilesize = 'filesize' in c ? c.filesize : null
 
-  // Videos: H (videohash2-to-videohash2) and T (first-frame hash) are two
-  // independent, differently-scaled comparisons — color each on its own
-  // 2-tier green/grey scale (see lowDistanceVariant). H is null whenever the
-  // candidate isn't itself a video row (nothing to compare against).
-  // Images: H is a single well-calibrated imagehash distance — keep the
-  // familiar 3-tier good/ok/bad coloring; T never applies here.
-  const hVariant = isVideo ? lowDistanceVariant(hDist) : hammingClass(hDist)
+  // H (videohash2-to-videohash2 or imagehash-to-imagehash) is a single
+  // well-calibrated distance either way — full good/ok/bad coloring.
+  // T (first-frame hash) mixes two source pipelines for videos (see
+  // match_hashes_video), so it keeps the simpler green/grey treatment.
+  const hVariant = hammingClass(hDist)
   const tVariant = isVideo ? lowDistanceVariant(tDist) : ''
+
+  const durationVariant = closenessVariant(c.duration, waDuration)
+  const resVariant = resolutionVariant(c.size, isVideo)
+  const fsVariant = filesizeVariant(cFilesize, isVideo)
 
   return (
     <div style={{
@@ -258,6 +334,15 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, isVideo }: Candid
               Px:{c.pixel_dist}
             </SmallBadge>
           )}
+          {c.duration != null && (
+            <SmallBadge variant={durationVariant || undefined}>⏱ {fmtDuration(c.duration)}</SmallBadge>
+          )}
+          {c.size && (
+            <SmallBadge variant={resVariant || undefined}>{c.size}</SmallBadge>
+          )}
+          {cFilesize && (
+            <SmallBadge variant={fsVariant || undefined}>{fmtFilesize(cFilesize)}</SmallBadge>
+          )}
           {'camera_name' in c && c.camera_name && (
             <SmallBadge style={{ background: 'rgba(34,197,94,.1)', color: '#4ade80' }}>📷</SmallBadge>
           )}
@@ -266,7 +351,7 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, isVideo }: Candid
           )}
         </div>
         <div style={{ fontSize: '.6rem', color: 'var(--muted)' }}>
-          {[fmtDate(c.timestamp), fmtDuration(c.duration), c.size, fmtFilesize('filesize' in c ? c.filesize : null)].filter(Boolean).join(' · ')}
+          {fmtDate(c.timestamp)}
         </div>
         {c.url && (
           <div style={{ fontSize: '.6rem', marginTop: 2 }}>
@@ -809,7 +894,14 @@ export default function Home(): JSX.Element {
                   const isAuto      = autoSelectId === c.id && c.source === 'hashes' && selectedId === null
                   return (
                     <div key={`${c.source}-${c.id}`} data-candidate-id={c.id} onClick={() => handleCandidateClick(c)}>
-                      <CandidateCard c={c} isSelected={isSelected} isAuto={isAuto} isPartnerOnly={c.source === 'partner'} isVideo={itemIsVideo} />
+                      <CandidateCard
+                        c={c}
+                        isSelected={isSelected}
+                        isAuto={isAuto}
+                        isPartnerOnly={c.source === 'partner'}
+                        isVideo={itemIsVideo}
+                        waDuration={item?.duration ?? null}
+                      />
                     </div>
                   )
                 })}
