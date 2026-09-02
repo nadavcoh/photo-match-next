@@ -155,9 +155,11 @@ $$;
 --                            them. No GIF-specific detection needed — a plain
 --                            photo just won't have a close-enough hash.
 --
--- Candidate generation still casts a wide net (top-50 per usable comparison,
--- unioned) and then keeps a row if ANY one of its usable comparisons clears
--- the threshold.
+-- Candidate generation is driven by the thumb hash only (top-50 by
+-- thumb-to-thumb, top-50 by thumb-to-image-hash, unioned) — hash_bit is not
+-- used to find candidates, only to report a distance once a candidate is
+-- already in the set (see p_hash_bit note above). A row is kept if its
+-- thumb_hamming clears the threshold.
 --
 -- `hamming` is NULL whenever a video_bit-to-video_bit comparison isn't
 -- possible (missing input hash, or the candidate is an image-type row).
@@ -181,7 +183,8 @@ RETURNS TABLE (
   filesize      text,
   origin        text,
   duration      integer,
-  hamming       integer,      -- hash_bit (videohash2) distance; video rows only
+  hamming       integer,      -- hash_bit (videohash2) distance; computed for
+                               -- display only, not used to find candidates
   thumb_hamming integer       -- first-frame distance (video_thumb_hash_bit, or
                                -- hash_bit for image-type/GIF candidates)
 )
@@ -192,12 +195,6 @@ SET search_path = public, extensions
 AS $$
   WITH candidate_ids AS (
     SELECT DISTINCT id FROM (
-      -- video-type candidates, widened via their own videohash2 hash
-      (SELECT id FROM public.hashes
-       WHERE p_hash_bit IS NOT NULL AND video_thumb_hash_bit IS NOT NULL
-       ORDER BY hash_bit <~> p_hash_bit::bit(64)
-       LIMIT 50)
-      UNION ALL
       -- video-type candidates, widened via their own thumb hash
       (SELECT id FROM public.hashes
        WHERE p_thumb_bit IS NOT NULL AND video_thumb_hash_bit IS NOT NULL
@@ -236,9 +233,7 @@ AS $$
   FROM public.hashes h
   JOIN candidate_ids c ON h.id = c.id
   WHERE
-       (h.video_thumb_hash_bit IS NOT NULL AND p_hash_bit IS NOT NULL
-          AND (h.hash_bit <~> p_hash_bit::bit(64))::integer <= p_threshold)
-    OR (h.video_thumb_hash_bit IS NOT NULL AND p_thumb_bit IS NOT NULL
+       (h.video_thumb_hash_bit IS NOT NULL AND p_thumb_bit IS NOT NULL
           AND (h.video_thumb_hash_bit <~> p_thumb_bit::bit(64))::integer <= p_threshold)
     OR (h.video_thumb_hash_bit IS NULL AND p_thumb_bit IS NOT NULL
           AND (h.hash_bit <~> p_thumb_bit::bit(64))::integer <= p_threshold);
@@ -283,7 +278,8 @@ $$;
 
 
 -- 4d. Video matching — partner table ─────────────────────────────────────────
--- Same hash-type-to-hash-type rules as match_hashes_video (see its comment).
+-- Same rules as match_hashes_video: candidates are found via thumb_hamming
+-- only; hamming is still computed and returned for display.
 
 CREATE OR REPLACE FUNCTION public.match_partner_video(
   p_hash_bit  text,
@@ -307,11 +303,6 @@ SET search_path = public, extensions
 AS $$
   WITH candidate_ids AS (
     SELECT DISTINCT id FROM (
-      (SELECT id FROM public.partner
-       WHERE p_hash_bit IS NOT NULL AND video_thumb_hash_bit IS NOT NULL
-       ORDER BY hash_bit <~> p_hash_bit::bit(64)
-       LIMIT 50)
-      UNION ALL
       (SELECT id FROM public.partner
        WHERE p_thumb_bit IS NOT NULL AND video_thumb_hash_bit IS NOT NULL
        ORDER BY video_thumb_hash_bit <~> p_thumb_bit::bit(64)
@@ -342,9 +333,7 @@ AS $$
   FROM public.partner p
   JOIN candidate_ids c ON p.id = c.id
   WHERE
-       (p.video_thumb_hash_bit IS NOT NULL AND p_hash_bit IS NOT NULL
-          AND (p.hash_bit <~> p_hash_bit::bit(64))::integer <= p_threshold)
-    OR (p.video_thumb_hash_bit IS NOT NULL AND p_thumb_bit IS NOT NULL
+       (p.video_thumb_hash_bit IS NOT NULL AND p_thumb_bit IS NOT NULL
           AND (p.video_thumb_hash_bit <~> p_thumb_bit::bit(64))::integer <= p_threshold)
     OR (p.video_thumb_hash_bit IS NULL AND p_thumb_bit IS NOT NULL
           AND (p.hash_bit <~> p_thumb_bit::bit(64))::integer <= p_threshold);

@@ -180,9 +180,15 @@ Both `wa` and `hashes`/`partner` store both columns for genuine video rows.
 `match_hashes_video`/`match_partner_video` (in `supabase-rls-and-rpc.sql`)
 compare `wa.hash_bit` only to the candidate's `hash_bit` (**H:** badge), and
 `wa.video_thumb_hash_bit` only to the candidate's `video_thumb_hash_bit`
-(**T:** badge) — two separate distances, never crossed. Candidate generation
-still casts a wide net (top-50 per usable comparison, unioned) and keeps a
-row if *either* clears `HAMMING_THRESHOLD`.
+(**T:** badge) — two separate distances, never crossed.
+
+**Candidate search uses `thumb_hamming` only.** `hash_bit` (videohash2) isn't
+reliable enough on its own to drive candidate selection or thresholding, so
+it plays no part in either the top-50 candidate-widening query or the
+`<= HAMMING_THRESHOLD` filter — a candidate is kept purely on
+`thumb_hamming`. `hamming` (**H:**) is still computed and returned on every
+row that has it (for display / manual judgment), it just never decides
+whether a row appears at all.
 
 **Edge case — GIFs:** an animated GIF lives in `hashes`/`partner` as a plain
 image row (`imagehash` of frame 1, `video_thumb_hash_bit` is NULL), but gets
