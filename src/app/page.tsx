@@ -148,7 +148,7 @@ function chromaInfo(pixelFormat: string | null): { label: string; variant: '' | 
 // photos, so it's treated as standard/ordinary here, not wide-gamut.
 // Renders nothing when both inputs are NULL (pre-migration rows, or ffprobe
 // couldn't determine them) rather than implying "SDR" from missing data.
-const STANDARD_PRIMARIES = ['bt709', 'smpte170m', 'smpte432']
+const STANDARD_PRIMARIES = ['bt709', 'smpte170m', 'smpte432', 'bt470bg']
 function hdrInfo(bitDepth: number | null, colorPrimaries: string | null): { label: string; variant: '' | 'good' | 'ok' | 'bad' } | null {
   if (bitDepth == null && !colorPrimaries) return null
   const highBitDepth = bitDepth != null && bitDepth > 8
@@ -177,9 +177,9 @@ function colorRangeInfo(range: string | null): { label: string; variant: '' | 'g
 // space paired with an HDR-style transfer curve (e.g. BT.2020 + HLG, like
 // "bt2020nc/arib-std-b67") — an actual step up, not just "standard". Red is
 // for values that don't match anything recognized on either axis.
-const ORDINARY_COLOR_SPACES = ['bt709', 'smpte170m']
+const ORDINARY_COLOR_SPACES = ['bt709', 'smpte170m', 'bt470bg']
 const WIDE_COLOR_SPACES = ['bt2020nc', 'bt2020c', 'bt2020']
-const ORDINARY_COLOR_TRANSFERS = ['bt709', 'iec61966-2-1']
+const ORDINARY_COLOR_TRANSFERS = ['bt709', 'iec61966-2-1', 'smpte170m']
 const HDR_COLOR_TRANSFERS = ['arib-std-b67', 'smpte2084']
 function colorProfileInfo(space: string | null, transfer: string | null): { label: string; variant: '' | 'good' | 'ok' | 'bad' } | null {
   if (!space && !transfer) return null
