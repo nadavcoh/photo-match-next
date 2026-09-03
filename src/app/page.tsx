@@ -134,22 +134,27 @@ function chromaInfo(pixelFormat: string | null): { label: string; variant: '' | 
   const pf = pixelFormat.toLowerCase()
   if (/^(yuvj?444|rgb|bgr|gbrp)/.test(pf)) return { label: '4:4:4', variant: 'good' }
   if (/^yuvj?422/.test(pf))                return { label: '4:2:2', variant: 'ok' }
-  if (/^(yuvj?420|nv12|nv21)/.test(pf))     return { label: '4:2:0', variant: 'bad' }
+  if (/^(yuvj?420|nv12|nv21)/.test(pf))     return { label: '4:2:0', variant: 'ok' }
   return { label: pixelFormat, variant: '' } // unrecognized pix_fmt — show raw value, no color
 }
 
 // HDR/wide-gamut indicator from bit_depth + color_primaries. Neither field
 // alone is a great signal (10-bit alone is common for ordinary video codecs;
-// non-bt709 primaries alone is rare/noisy) — flag "HDR" only when both line
-// up, "?" when just one does. Renders nothing when both inputs are NULL
-// (pre-migration rows, or ffprobe couldn't determine them) rather than
-// implying "SDR" from missing data.
+// non-bt709 primaries alone is rare/noisy) — flag "HDR" (green — a genuine
+// step up) only when both a >8-bit depth AND non-standard primaries line
+// up; "SDR" (yellow — the ordinary baseline, not something to celebrate) when
+// neither does; a middle "N-bit"/bare-primaries-name (yellow) when only one
+// signal fires. `smpte432` (Display P3) is common on plain, non-HDR iPhone
+// photos, so it's treated as standard/ordinary here, not wide-gamut.
+// Renders nothing when both inputs are NULL (pre-migration rows, or ffprobe
+// couldn't determine them) rather than implying "SDR" from missing data.
+const STANDARD_PRIMARIES = ['bt709', 'smpte170m', 'smpte432']
 function hdrInfo(bitDepth: number | null, colorPrimaries: string | null): { label: string; variant: '' | 'good' | 'ok' | 'bad' } | null {
   if (bitDepth == null && !colorPrimaries) return null
   const highBitDepth = bitDepth != null && bitDepth > 8
-  const wideGamut = colorPrimaries != null && !['bt709', 'smpte170m'].includes(colorPrimaries.toLowerCase())
-  if (!highBitDepth && !wideGamut) return { label: 'SDR', variant: 'good' }
-  if (highBitDepth && wideGamut)   return { label: 'HDR', variant: 'bad' }
+  const wideGamut = colorPrimaries != null && !STANDARD_PRIMARIES.includes(colorPrimaries.toLowerCase())
+  if (!highBitDepth && !wideGamut) return { label: 'SDR', variant: 'ok' }
+  if (highBitDepth && wideGamut)   return { label: 'HDR', variant: 'good' }
   return { label: highBitDepth ? `${bitDepth}-bit` : (colorPrimaries as string), variant: 'ok' }
 }
 
@@ -165,20 +170,35 @@ function colorRangeInfo(range: string | null): { label: string; variant: '' | 'g
   return { label: range, variant: 'bad' }
 }
 
-// color_space/color_transfer, folded into one "profile" badge: green when
-// both match the common consumer-standard values, red when neither does,
-// yellow when only one does. Distinct from the HDR badge above (which
-// reads bit_depth + color_primaries) — a file can be non-standard here
-// without qualifying as HDR, and vice versa.
-const STANDARD_COLOR_SPACES = ['bt709', 'smpte170m']
-const STANDARD_COLOR_TRANSFERS = ['bt709', 'iec61966-2-1']
+// color_space/color_transfer, folded into one "profile" badge. Ordinary
+// SD/HD combos (bt709 or smpte170m space with a bt709-style transfer — e.g.
+// "bt709/bt709", "smpte170m/bt709") are just the everyday baseline, so they
+// land on yellow rather than green. Green is reserved for a genuinely wider
+// space paired with an HDR-style transfer curve (e.g. BT.2020 + HLG, like
+// "bt2020nc/arib-std-b67") — an actual step up, not just "standard". Red is
+// for values that don't match anything recognized on either axis.
+const ORDINARY_COLOR_SPACES = ['bt709', 'smpte170m']
+const WIDE_COLOR_SPACES = ['bt2020nc', 'bt2020c', 'bt2020']
+const ORDINARY_COLOR_TRANSFERS = ['bt709', 'iec61966-2-1']
+const HDR_COLOR_TRANSFERS = ['arib-std-b67', 'smpte2084']
 function colorProfileInfo(space: string | null, transfer: string | null): { label: string; variant: '' | 'good' | 'ok' | 'bad' } | null {
   if (!space && !transfer) return null
-  const spaceOk = space == null || STANDARD_COLOR_SPACES.includes(space.toLowerCase())
-  const transferOk = transfer == null || STANDARD_COLOR_TRANSFERS.includes(transfer.toLowerCase())
   const label = [space, transfer].filter(Boolean).join('/')
-  if (spaceOk && transferOk) return { label, variant: 'good' }
-  if (!spaceOk && !transferOk) return { label, variant: 'bad' }
+  const spaceLower = space?.toLowerCase() ?? ''
+  const transferLower = transfer?.toLowerCase() ?? ''
+
+  const spaceIsWide = WIDE_COLOR_SPACES.includes(spaceLower)
+  const transferIsHdr = HDR_COLOR_TRANSFERS.includes(transferLower)
+  if (spaceIsWide && transferIsHdr) return { label, variant: 'good' }
+
+  const spaceIsOrdinary = space == null || ORDINARY_COLOR_SPACES.includes(spaceLower)
+  const transferIsOrdinary = transfer == null || ORDINARY_COLOR_TRANSFERS.includes(transferLower)
+  if (spaceIsOrdinary && transferIsOrdinary) return { label, variant: 'ok' }
+
+  const spaceRecognized = spaceIsOrdinary || spaceIsWide
+  const transferRecognized = transferIsOrdinary || transferIsHdr
+  if (!spaceRecognized && !transferRecognized) return { label, variant: 'bad' }
+
   return { label, variant: 'ok' }
 }
 

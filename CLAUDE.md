@@ -231,23 +231,31 @@ judgment call — tune if real data clusters differently than guessed here:
   yellow, below → red. JPEG only; badge doesn't render for other formats.
 - **Chroma subsampling (`pixel_format`)** — `chromaInfo` derives a label
   from ffprobe's raw `pix_fmt` (no column stores this pre-formatted): 4:4:4
-  → green, 4:2:2 → yellow, 4:2:0 → red. Important nuance: 4:2:0 being red
-  does **not** mean something's wrong — it's the near-universal default for
-  consumer photos/video, not a defect. Unrecognized `pix_fmt` values are
-  shown as-is, uncolored.
+  → green, 4:2:2 → yellow, 4:2:0 → yellow. Note both 4:2:2 and 4:2:0 land on
+  yellow now — 4:2:0 being anything other than green does **not** mean
+  something's wrong, it's the near-universal default for consumer
+  photos/video, not a defect. Unrecognized `pix_fmt` values are shown
+  as-is, uncolored.
 - **HDR/wide-gamut (`bit_depth` + `color_primaries`)** — `hdrInfo`: flags
-  "HDR" (red) only when both a >8-bit depth AND non-standard primaries
-  (anything besides `bt709`/`smpte170m`) line up together; "SDR" (green)
-  when neither does; a middle "N-bit" or bare primaries-name (yellow) when
-  only one signal fires, since either alone is a weak/noisy indicator on
-  its own. Renders nothing when both inputs are NULL, rather than
-  defaulting to "SDR" from missing data.
+  "HDR" (green — a genuine step up) only when both a >8-bit depth AND
+  non-standard primaries line up together; "SDR" (yellow — the ordinary
+  baseline, not something to celebrate) when neither does; a middle
+  "N-bit" or bare primaries-name (also yellow) when only one signal fires,
+  since either alone is a weak/noisy indicator on its own. `smpte432`
+  (Display P3) is included in the "standard" primaries list alongside
+  `bt709`/`smpte170m` — it's common on plain, non-HDR iPhone photos, not a
+  wide-gamut/HDR signal on its own. Renders nothing when both inputs are
+  NULL, rather than defaulting to "SDR" from missing data.
 - **Color profile (`color_space` + `color_transfer`)** — `colorProfileInfo`:
-  green when both match common consumer-standard values (`bt709`/
-  `smpte170m` for space, `bt709`/`iec61966-2-1` for transfer), red when
-  neither does, yellow when only one does. Deliberately separate from the
-  HDR badge above — a file can be non-standard here without qualifying as
-  HDR, and vice versa.
+  the everyday SD/HD baseline (`bt709`/`smpte170m` space with a
+  `bt709`-style transfer — e.g. `"bt709/bt709"`, `"smpte170m/bt709"`) is
+  yellow, not green — it's just standard, not exceptional. Green is
+  reserved for a genuinely wide space paired with an HDR-style transfer
+  (e.g. `"bt2020nc/arib-std-b67"` — BT.2020 + HLG). Red is for values that
+  match neither list on either axis. Deliberately separate from the HDR
+  badge above (different columns: `color_space`/`color_transfer` here vs.
+  `bit_depth`/`color_primaries` there) — a file can land in either
+  independently.
 - **Color range (`color_range`)** — `colorRangeInfo`: `"pc"` (full 0-255) →
   green, `"tv"` (limited 16-235) → yellow (this is the default convention
   for most consumer video/JPEG, not a defect, hence yellow rather than
