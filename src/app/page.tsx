@@ -120,7 +120,7 @@ function filesizeVariant(bytes: number | null, isVideo: boolean): '' | 'good' | 
 function jpegQualityVariant(q: number | null): '' | 'good' | 'ok' | 'bad' {
   if (q == null) return ''
   if (q >= 85) return 'good'
-  if (q >= 60) return 'ok'
+  if (q >= 65) return 'ok'
   return 'bad'
 }
 

@@ -227,7 +227,7 @@ type change, which `CREATE OR REPLACE` alone refuses to do — so **re-run
 Badges added to `CandidateCard` (`page.tsx`), all with a 3-tier good/ok/bad
 judgment call — tune if real data clusters differently than guessed here:
 
-- **Q:N (`jpeg_quality`)** — `jpegQualityVariant`: ≥85 → green, ≥60 →
+- **Q:N (`jpeg_quality`)** — `jpegQualityVariant`: ≥85 → green, ≥65 →
   yellow, below → red. JPEG only; badge doesn't render for other formats.
 - **Chroma subsampling (`pixel_format`)** — `chromaInfo` derives a label
   from ffprobe's raw `pix_fmt` (no column stores this pre-formatted): 4:4:4
