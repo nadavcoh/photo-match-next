@@ -88,27 +88,52 @@ CREATE POLICY "thumbnails_authenticated_read" ON storage.objects
 -- Column naming: the alias `ts` is used for timestamp columns to avoid the
 -- SQL reserved word. The TypeScript route maps `ts` → `timestamp` in the
 -- response object.
+--
+-- Technical-metadata columns (filesize_bytes, jpeg_quality, bit_depth,
+-- pixel_format, color_primaries, color_space, color_transfer, color_range)
+-- were added to `hashes`/`partner` by migration_technical_metadata.sql —
+-- see frontend_changes.md. All four functions below pass them straight
+-- through (no computation, they're just extra columns on the source
+-- tables). `jpeg_quant_tables` (the raw per-row DQT arrays) is deliberately
+-- NOT selected here — nothing in the UI needs the raw table, only the
+-- derived `jpeg_quality` estimate, so there's no reason to ship that much
+-- JSON over the wire.
+--
+-- Because this adds columns to each function's RETURNS TABLE, CREATE OR
+-- REPLACE alone won't work here — Postgres treats a changed return-column
+-- list as a return-type change and refuses ("cannot change return type of
+-- existing function"). Each function is explicitly DROPped first.
 
 -- 4a. Image matching — hashes table ─────────────────────────────────────────
+
+DROP FUNCTION IF EXISTS public.match_hashes_image(text, integer);
 
 CREATE OR REPLACE FUNCTION public.match_hashes_image(
   p_hash_bit  text,
   p_threshold integer
 )
 RETURNS TABLE (
-  id            integer,
-  filename      text,
-  camera_name   text,
-  location      text,
-  location_name text,
-  ts            timestamptz,
-  url           text,
-  size          text,
-  filesize      text,
-  origin        text,
-  duration      integer,
-  hamming       integer,
-  thumb_hamming integer
+  id               integer,
+  filename         text,
+  camera_name      text,
+  location         text,
+  location_name    text,
+  ts               timestamptz,
+  url              text,
+  size             text,
+  filesize         text,
+  filesize_bytes   bigint,
+  origin           text,
+  duration         integer,
+  jpeg_quality     smallint,
+  bit_depth        smallint,
+  pixel_format     text,
+  color_primaries  text,
+  color_space      text,
+  color_transfer   text,
+  color_range      text,
+  hamming          integer,
+  thumb_hamming    integer
 )
 LANGUAGE sql
 STABLE
@@ -125,8 +150,16 @@ AS $$
     url,
     size,
     filesize,
+    filesize_bytes,
     origin,
     duration,
+    jpeg_quality,
+    bit_depth,
+    pixel_format,
+    color_primaries,
+    color_space,
+    color_transfer,
+    color_range,
     (hash_bit <~> p_hash_bit::bit(64))::integer      AS hamming,
     NULL::integer                                    AS thumb_hamming
   FROM public.hashes
@@ -166,27 +199,37 @@ $$;
 -- `thumb_hamming` covers both the real thumb-to-thumb case and the
 -- GIF-as-image edge case described above.
 
+DROP FUNCTION IF EXISTS public.match_hashes_video(text, text, integer);
+
 CREATE OR REPLACE FUNCTION public.match_hashes_video(
   p_hash_bit  text,
   p_thumb_bit text,
   p_threshold integer
 )
 RETURNS TABLE (
-  id            integer,
-  filename      text,
-  camera_name   text,
-  location      text,
-  location_name text,
-  ts            timestamptz,
-  url           text,
-  size          text,
-  filesize      text,
-  origin        text,
-  duration      integer,
-  hamming       integer,      -- hash_bit (videohash2) distance; computed for
-                               -- display only, not used to find candidates
-  thumb_hamming integer       -- first-frame distance (video_thumb_hash_bit, or
-                               -- hash_bit for image-type/GIF candidates)
+  id               integer,
+  filename         text,
+  camera_name      text,
+  location         text,
+  location_name    text,
+  ts               timestamptz,
+  url              text,
+  size             text,
+  filesize         text,
+  filesize_bytes   bigint,
+  origin           text,
+  duration         integer,
+  jpeg_quality     smallint,   -- always NULL for video rows (JPEG-only column)
+  bit_depth        smallint,
+  pixel_format     text,
+  color_primaries  text,
+  color_space      text,
+  color_transfer   text,
+  color_range      text,
+  hamming          integer,      -- hash_bit (videohash2) distance; computed for
+                                  -- display only, not used to find candidates
+  thumb_hamming    integer       -- first-frame distance (video_thumb_hash_bit, or
+                                  -- hash_bit for image-type/GIF candidates)
 )
 LANGUAGE sql
 STABLE
@@ -219,8 +262,16 @@ AS $$
     h.url,
     h.size,
     h.filesize,
+    h.filesize_bytes,
     h.origin,
     h.duration,
+    h.jpeg_quality,
+    h.bit_depth,
+    h.pixel_format,
+    h.color_primaries,
+    h.color_space,
+    h.color_transfer,
+    h.color_range,
     CASE WHEN h.video_thumb_hash_bit IS NOT NULL AND p_hash_bit IS NOT NULL
       THEN (h.hash_bit <~> p_hash_bit::bit(64))::integer
     END AS hamming,
@@ -242,19 +293,30 @@ $$;
 
 -- 4c. Image matching — partner table ─────────────────────────────────────────
 
+DROP FUNCTION IF EXISTS public.match_partner_image(text, integer);
+
 CREATE OR REPLACE FUNCTION public.match_partner_image(
   p_hash_bit  text,
   p_threshold integer
 )
 RETURNS TABLE (
-  id            integer,
-  filename      text,
-  ts            timestamptz,
-  url           text,
-  size          text,
-  duration      integer,
-  hamming       integer,
-  thumb_hamming integer
+  id               integer,
+  filename         text,
+  ts               timestamptz,
+  url              text,
+  size             text,
+  filesize         text,
+  filesize_bytes   bigint,
+  duration         integer,
+  jpeg_quality     smallint,
+  bit_depth        smallint,
+  pixel_format     text,
+  color_primaries  text,
+  color_space      text,
+  color_transfer   text,
+  color_range      text,
+  hamming          integer,
+  thumb_hamming    integer
 )
 LANGUAGE sql
 STABLE
@@ -267,7 +329,16 @@ AS $$
     timestamp                                        AS ts,
     url,
     size,
+    filesize,
+    filesize_bytes,
     duration,
+    jpeg_quality,
+    bit_depth,
+    pixel_format,
+    color_primaries,
+    color_space,
+    color_transfer,
+    color_range,
     (hash_bit <~> p_hash_bit::bit(64))::integer      AS hamming,
     NULL::integer                                    AS thumb_hamming
   FROM public.partner
@@ -281,20 +352,31 @@ $$;
 -- Same rules as match_hashes_video: candidates are found via thumb_hamming
 -- only; hamming is still computed and returned for display.
 
+DROP FUNCTION IF EXISTS public.match_partner_video(text, text, integer);
+
 CREATE OR REPLACE FUNCTION public.match_partner_video(
   p_hash_bit  text,
   p_thumb_bit text,
   p_threshold integer
 )
 RETURNS TABLE (
-  id            integer,
-  filename      text,
-  ts            timestamptz,
-  url           text,
-  size          text,
-  duration      integer,
-  hamming       integer,
-  thumb_hamming integer
+  id               integer,
+  filename         text,
+  ts               timestamptz,
+  url              text,
+  size             text,
+  filesize         text,
+  filesize_bytes   bigint,
+  duration         integer,
+  jpeg_quality     smallint,
+  bit_depth        smallint,
+  pixel_format     text,
+  color_primaries  text,
+  color_space      text,
+  color_transfer   text,
+  color_range      text,
+  hamming          integer,
+  thumb_hamming    integer
 )
 LANGUAGE sql
 STABLE
@@ -320,7 +402,16 @@ AS $$
     p.timestamp AS ts,
     p.url,
     p.size,
+    p.filesize,
+    p.filesize_bytes,
     p.duration,
+    p.jpeg_quality,
+    p.bit_depth,
+    p.pixel_format,
+    p.color_primaries,
+    p.color_space,
+    p.color_transfer,
+    p.color_range,
     CASE WHEN p.video_thumb_hash_bit IS NOT NULL AND p_hash_bit IS NOT NULL
       THEN (p.hash_bit <~> p_hash_bit::bit(64))::integer
     END AS hamming,
@@ -345,14 +436,10 @@ $$;
 -- PostgREST calls RPC functions under the authenticated role. Without an
 -- explicit GRANT the call will fail with "permission denied for function …".
 --
--- match_hashes_video/match_partner_video changed signature (p_search_bit →
--- p_hash_bit, p_thumb_bit) when video/thumb hashes were split into
--- independent comparisons. CREATE OR REPLACE can't change a function's
--- argument list, so the old 2-arg overloads are dropped explicitly here —
--- otherwise they'd linger as dead, still-callable functions.
-
-DROP FUNCTION IF EXISTS public.match_hashes_video(text, integer);
-DROP FUNCTION IF EXISTS public.match_partner_video(text, integer);
+-- Every function above was DROPped and recreated in this revision (adding
+-- technical-metadata output columns counts as a return-type change, which
+-- CREATE OR REPLACE can't do), so each is a "new" function object as far as
+-- privileges go — GRANT unconditionally rather than assuming it carried over.
 
 GRANT EXECUTE ON FUNCTION public.match_hashes_image(text, integer)        TO authenticated;
 GRANT EXECUTE ON FUNCTION public.match_hashes_video(text, text, integer)  TO authenticated;

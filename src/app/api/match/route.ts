@@ -59,7 +59,18 @@ async function downloadThumbnailBytes(
 // ── RPC row types ──────────────────────────────────────────────────────────────
 // These mirror the RETURNS TABLE definitions in the SQL script.
 
-interface HashesRpcRow {
+interface TechnicalMetadataRpcRow {
+  filesize_bytes: number | null
+  jpeg_quality: number | null
+  bit_depth: number | null
+  pixel_format: string | null
+  color_primaries: string | null
+  color_space: string | null
+  color_transfer: string | null
+  color_range: string | null
+}
+
+interface HashesRpcRow extends TechnicalMetadataRpcRow {
   id: number
   filename: string | null
   camera_name: string | null
@@ -75,15 +86,29 @@ interface HashesRpcRow {
   thumb_hamming: number | null // first-frame distance (thumb-to-thumb, or thumb-to-hash_bit for image/GIF candidates)
 }
 
-interface PartnerRpcRow {
+interface PartnerRpcRow extends TechnicalMetadataRpcRow {
   id: number
   filename: string | null
   ts: string | null
   url: string | null
   size: string | null
+  filesize: string | null
   duration: number | null
   hamming: number | null
   thumb_hamming: number | null
+}
+
+function technicalMetadataFrom(r: TechnicalMetadataRpcRow): TechnicalMetadataRpcRow {
+  return {
+    filesize_bytes: r.filesize_bytes,
+    jpeg_quality: r.jpeg_quality,
+    bit_depth: r.bit_depth,
+    pixel_format: r.pixel_format,
+    color_primaries: r.color_primaries,
+    color_space: r.color_space,
+    color_transfer: r.color_transfer,
+    color_range: r.color_range,
+  }
 }
 
 // ── Candidate fetchers ─────────────────────────────────────────────────────────
@@ -120,6 +145,7 @@ async function fetchHashesCandidates(
       pixel_dist: null,
       thumbnail_url: thumbnailUrl('hashes', r.id),
       source: 'hashes' as const,
+      ...technicalMetadataFrom(r),
     }))
   }
 
@@ -154,6 +180,7 @@ async function fetchHashesCandidates(
     pixel_dist: null,
     thumbnail_url: thumbnailUrl('hashes', r.id),
     source: 'hashes' as const,
+    ...technicalMetadataFrom(r),
   }))
 }
 
@@ -178,12 +205,14 @@ async function fetchPartnerCandidates(
       timestamp: isoOrNull(r.ts),
       url: r.url,
       size: r.size,
+      filesize: r.filesize,
       duration: r.duration,
       hamming: r.hamming,
       thumb_hamming: null,
       pixel_dist: null,
       thumbnail_url: thumbnailUrl('partner', r.id),
       source: 'partner' as const,
+      ...technicalMetadataFrom(r),
     }))
   }
 
@@ -202,12 +231,14 @@ async function fetchPartnerCandidates(
     timestamp: isoOrNull(r.ts),
     url: r.url,
     size: r.size,
+    filesize: r.filesize,
     duration: r.duration,
     hamming: r.hamming,
     thumb_hamming: r.thumb_hamming,
     pixel_dist: null,
     thumbnail_url: thumbnailUrl('partner', r.id),
     source: 'partner' as const,
+    ...technicalMetadataFrom(r),
   }))
 }
 

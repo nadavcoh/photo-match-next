@@ -190,19 +190,72 @@ against. This shapes the three badges differently:
   - These cutoffs are a judgment call, not a spec from WhatsApp/phone
     vendors — tune the constants in `resolutionVariant` if real-world
     candidates cluster differently.
-- **Filesize** (`c.filesize`) — same absolute-threshold philosophy as
-  resolution, applied to bytes instead of pixels (`filesizeVariant` in
-  `page.tsx`, parsed via `parseFileSizeBytes`):
+- **Filesize** (`c.filesize` / `c.filesize_bytes`) — same absolute-threshold
+  philosophy as resolution, applied to bytes instead of pixels
+  (`filesizeVariant` in `page.tsx`). Prefers the exact `filesize_bytes`
+  column (see migration below); falls back to parsing the legacy `filesize`
+  text via `parseFileSizeBytes` for pre-migration rows where it's NULL:
   - Video: ≥8MB → green, ≥1MB → yellow, below → red.
   - Image: ≥2MB → green, ≥200KB → yellow, below → red.
   - These are a rough proxy for the same three tiers as resolution (full
     capture / WhatsApp HD / WhatsApp default), not a measured mapping —
-    tune them if real files land somewhere unexpected. Only `hashes`
-    candidates have this field at all — `partner` never selects it.
+    tune them if real files land somewhere unexpected. `partner` didn't
+    select `filesize` at all until the technical-metadata migration below —
+    see that section for what's now available on both tables.
 
 `WAItemCard` only ever shows `wa`'s own `duration` badge (uncolored, it's
 the reference point) — no size/filesize badges there since `wa` has neither
 column.
+
+## Technical/codec metadata badges (migration_technical_metadata.sql)
+
+Source: `frontend_changes.md` (from the `phash` repo). Adds 8 new columns to
+both `hashes` and `partner` — all `NULL` on rows inserted before the
+migration, and the four JPEG-only fields are `NULL` on any non-JPEG file.
+`jpeg_quant_tables` (raw per-row DQT arrays) is deliberately **not**
+selected by any RPC — nothing in the UI needs the raw table, only the
+derived `jpeg_quality` estimate; shipping it would be a lot of JSON for no
+display purpose.
+
+All four RPC functions (`match_hashes_image/video`, `match_partner_image/
+video` in `supabase-rls-and-rpc.sql`) now return the other 7 columns as a
+plain passthrough. This required a `DROP FUNCTION` before each
+`CREATE OR REPLACE` — Postgres treats an added output column as a return-
+type change, which `CREATE OR REPLACE` alone refuses to do — so **re-run
+`supabase-rls-and-rpc.sql`** to pick this up.
+
+Badges added to `CandidateCard` (`page.tsx`), all with a 3-tier good/ok/bad
+judgment call — tune if real data clusters differently than guessed here:
+
+- **Q:N (`jpeg_quality`)** — `jpegQualityVariant`: ≥85 → green, ≥60 →
+  yellow, below → red. JPEG only; badge doesn't render for other formats.
+- **Chroma subsampling (`pixel_format`)** — `chromaInfo` derives a label
+  from ffprobe's raw `pix_fmt` (no column stores this pre-formatted): 4:4:4
+  → green, 4:2:2 → yellow, 4:2:0 → red. Important nuance: 4:2:0 being red
+  does **not** mean something's wrong — it's the near-universal default for
+  consumer photos/video, not a defect. Unrecognized `pix_fmt` values are
+  shown as-is, uncolored.
+- **HDR/wide-gamut (`bit_depth` + `color_primaries`)** — `hdrInfo`: flags
+  "HDR" (red) only when both a >8-bit depth AND non-standard primaries
+  (anything besides `bt709`/`smpte170m`) line up together; "SDR" (green)
+  when neither does; a middle "N-bit" or bare primaries-name (yellow) when
+  only one signal fires, since either alone is a weak/noisy indicator on
+  its own. Renders nothing when both inputs are NULL, rather than
+  defaulting to "SDR" from missing data.
+- **Color profile (`color_space` + `color_transfer`)** — `colorProfileInfo`:
+  green when both match common consumer-standard values (`bt709`/
+  `smpte170m` for space, `bt709`/`iec61966-2-1` for transfer), red when
+  neither does, yellow when only one does. Deliberately separate from the
+  HDR badge above — a file can be non-standard here without qualifying as
+  HDR, and vice versa.
+- **Color range (`color_range`)** — `colorRangeInfo`: `"pc"` (full 0-255) →
+  green, `"tv"` (limited 16-235) → yellow (this is the default convention
+  for most consumer video/JPEG, not a defect, hence yellow rather than
+  red), anything else → red as an unrecognized value.
+
+None of these have a `wa`-side reference to compare against (same
+constraint as resolution/filesize above) — they're all absolute
+judgment-call thresholds on the candidate's own value.
 
 ## Video hashing: two independent hash spaces, never cross-compared
 
