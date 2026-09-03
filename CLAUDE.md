@@ -242,20 +242,21 @@ judgment call — tune if real data clusters differently than guessed here:
   baseline, not something to celebrate) when neither does; a middle
   "N-bit" or bare primaries-name (also yellow) when only one signal fires,
   since either alone is a weak/noisy indicator on its own. `smpte432`
-  (Display P3) is included in the "standard" primaries list alongside
-  `bt709`/`smpte170m` — it's common on plain, non-HDR iPhone photos, not a
-  wide-gamut/HDR signal on its own. Renders nothing when both inputs are
-  NULL, rather than defaulting to "SDR" from missing data.
+  (Display P3) and `bt470bg` (PAL/SECAM) are included in the "standard"
+  primaries list alongside `bt709`/`smpte170m` — common, ordinary values
+  that shouldn't trip the wide-gamut/HDR flag on their own. Renders
+  nothing when both inputs are NULL, rather than defaulting to "SDR" from
+  missing data.
 - **Color profile (`color_space` + `color_transfer`)** — `colorProfileInfo`:
-  the everyday SD/HD baseline (`bt709`/`smpte170m` space with a
-  `bt709`-style transfer — e.g. `"bt709/bt709"`, `"smpte170m/bt709"`) is
-  yellow, not green — it's just standard, not exceptional. Green is
-  reserved for a genuinely wide space paired with an HDR-style transfer
-  (e.g. `"bt2020nc/arib-std-b67"` — BT.2020 + HLG). Red is for values that
-  match neither list on either axis. Deliberately separate from the HDR
-  badge above (different columns: `color_space`/`color_transfer` here vs.
-  `bit_depth`/`color_primaries` there) — a file can land in either
-  independently.
+  the everyday SD/HD baseline (`bt709`/`smpte170m`/`bt470bg` space with a
+  `bt709`/`smpte170m`-style transfer — e.g. `"bt709/bt709"`,
+  `"smpte170m/bt709"`, `"bt470bg/smpte170m"`) is yellow, not green — it's
+  just standard, not exceptional. Green is reserved for a genuinely wide
+  space paired with an HDR-style transfer (e.g. `"bt2020nc/arib-std-b67"` —
+  BT.2020 + HLG). Red is for values that match neither list on either axis.
+  Deliberately separate from the HDR badge above (different columns:
+  `color_space`/`color_transfer` here vs. `bit_depth`/`color_primaries`
+  there) — a file can land in either independently.
 - **Color range (`color_range`)** — `colorRangeInfo`: `"pc"` (full 0-255) →
   green, `"tv"` (limited 16-235) → yellow (this is the default convention
   for most consumer video/JPEG, not a defect, hence yellow rather than
@@ -264,6 +265,16 @@ judgment call — tune if real data clusters differently than guessed here:
 None of these have a `wa`-side reference to compare against (same
 constraint as resolution/filesize above) — they're all absolute
 judgment-call thresholds on the candidate's own value.
+
+**Partner and hashes badges are guaranteed identical by construction**, not
+by coincidence: `HashCandidate`/`PartnerCandidate` both extend the same
+`TechnicalMetadata` interface, `technicalMetadataFrom()` in `route.ts` maps
+both RPC row shapes through identical field names, and `CandidateCard`
+renders every technical/duration/resolution/filesize badge off `c.<field>`
+with no source-specific branching — the only conditionally-rendered fields
+are the ones that are genuinely source-specific (`origin`, `camera_name`,
+`location` only exist on `HashCandidate`; there's no partner equivalent in
+the schema, not a UI oversight).
 
 ## Video hashing: two independent hash spaces, never cross-compared
 
