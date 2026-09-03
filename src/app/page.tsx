@@ -34,6 +34,15 @@ function fmtFilesize(s: string | null | undefined): string {
   return s.match(/\(([^)]+)\)/)?.[1] ?? s
 }
 
+function fmtBytes(bytes: number | null | undefined): string {
+  if (bytes == null || !isFinite(bytes) || bytes < 0) return ''
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = bytes
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
+  return `${v.toFixed(i > 0 && v < 10 ? 1 : 0)} ${units[i]}`
+}
+
 function fmtDuration(seconds: number | null | undefined): string {
   if (seconds == null || !isFinite(seconds) || seconds < 0) return ''
   const total = Math.round(seconds)
@@ -86,9 +95,11 @@ function parseFileSizeBytes(s: string | null | undefined): number | null {
 // reference to compare against). These byte cutoffs are a rough proxy for
 // the resolution tiers (full-quality capture vs. WhatsApp HD vs. WhatsApp
 // default/low-res compression) — tune them if real files cluster elsewhere.
+// Takes resolved bytes rather than a string — callers should prefer the
+// exact filesize_bytes column and only fall back to parsing the legacy
+// filesize text when it's NULL (pre-migration rows).
 const MB = 1024 * 1024
-function filesizeVariant(sizeStr: string | null | undefined, isVideo: boolean): '' | 'good' | 'ok' | 'bad' {
-  const bytes = parseFileSizeBytes(sizeStr)
+function filesizeVariant(bytes: number | null, isVideo: boolean): '' | 'good' | 'ok' | 'bad' {
   if (bytes == null) return ''
 
   if (isVideo) {
@@ -100,6 +111,75 @@ function filesizeVariant(sizeStr: string | null | undefined, isVideo: boolean): 
   if (bytes >= 2 * MB)   return 'good' // full smartphone-camera photo
   if (bytes >= 0.2 * MB) return 'ok'   // WhatsApp "HD" quality range
   return 'bad'                          // WhatsApp default/low-res compression
+}
+
+// Approximate JPEG quality (1-100), estimated server-side from the
+// quantization table. NULL for non-JPEG files. Thresholds are a judgment
+// call — smartphone camera JPEGs are typically 90+, WhatsApp's own
+// compression commonly lands in the 60s-70s.
+function jpegQualityVariant(q: number | null): '' | 'good' | 'ok' | 'bad' {
+  if (q == null) return ''
+  if (q >= 85) return 'good'
+  if (q >= 60) return 'ok'
+  return 'bad'
+}
+
+// Chroma subsampling, derived from ffprobe's pix_fmt (no column stores this
+// pre-formatted — see frontend_changes.md). Ordering reflects how much
+// chroma detail is retained: 4:4:4 (full) > 4:2:2 > 4:2:0. Note 4:2:0 being
+// "red" doesn't mean something's wrong — it's the near-universal default for
+// consumer photos/video, not a defect.
+function chromaInfo(pixelFormat: string | null): { label: string; variant: '' | 'good' | 'ok' | 'bad' } | null {
+  if (!pixelFormat) return null
+  const pf = pixelFormat.toLowerCase()
+  if (/^(yuvj?444|rgb|bgr|gbrp)/.test(pf)) return { label: '4:4:4', variant: 'good' }
+  if (/^yuvj?422/.test(pf))                return { label: '4:2:2', variant: 'ok' }
+  if (/^(yuvj?420|nv12|nv21)/.test(pf))     return { label: '4:2:0', variant: 'bad' }
+  return { label: pixelFormat, variant: '' } // unrecognized pix_fmt — show raw value, no color
+}
+
+// HDR/wide-gamut indicator from bit_depth + color_primaries. Neither field
+// alone is a great signal (10-bit alone is common for ordinary video codecs;
+// non-bt709 primaries alone is rare/noisy) — flag "HDR" only when both line
+// up, "?" when just one does. Renders nothing when both inputs are NULL
+// (pre-migration rows, or ffprobe couldn't determine them) rather than
+// implying "SDR" from missing data.
+function hdrInfo(bitDepth: number | null, colorPrimaries: string | null): { label: string; variant: '' | 'good' | 'ok' | 'bad' } | null {
+  if (bitDepth == null && !colorPrimaries) return null
+  const highBitDepth = bitDepth != null && bitDepth > 8
+  const wideGamut = colorPrimaries != null && !['bt709', 'smpte170m'].includes(colorPrimaries.toLowerCase())
+  if (!highBitDepth && !wideGamut) return { label: 'SDR', variant: 'good' }
+  if (highBitDepth && wideGamut)   return { label: 'HDR', variant: 'bad' }
+  return { label: highBitDepth ? `${bitDepth}-bit` : (colorPrimaries as string), variant: 'ok' }
+}
+
+// color_range: "pc" (full 0-255) keeps more of the file's tonal data than
+// the "tv" (limited 16-235) convention most consumer video/JPEG uses — tv
+// isn't a defect, it's just the default, hence 'ok' rather than 'good'.
+// Anything else is an unrecognized value, flagged for visibility.
+function colorRangeInfo(range: string | null): { label: string; variant: '' | 'good' | 'ok' | 'bad' } | null {
+  if (!range) return null
+  const r = range.toLowerCase()
+  if (r === 'pc') return { label: 'full-range', variant: 'good' }
+  if (r === 'tv') return { label: 'limited-range', variant: 'ok' }
+  return { label: range, variant: 'bad' }
+}
+
+// color_space/color_transfer, folded into one "profile" badge: green when
+// both match the common consumer-standard values, red when neither does,
+// yellow when only one does. Distinct from the HDR badge above (which
+// reads bit_depth + color_primaries) — a file can be non-standard here
+// without qualifying as HDR, and vice versa.
+const STANDARD_COLOR_SPACES = ['bt709', 'smpte170m']
+const STANDARD_COLOR_TRANSFERS = ['bt709', 'iec61966-2-1']
+function colorProfileInfo(space: string | null, transfer: string | null): { label: string; variant: '' | 'good' | 'ok' | 'bad' } | null {
+  if (!space && !transfer) return null
+  const spaceOk = space == null || STANDARD_COLOR_SPACES.includes(space.toLowerCase())
+  const transferOk = transfer == null || STANDARD_COLOR_TRANSFERS.includes(transfer.toLowerCase())
+  const label = [space, transfer].filter(Boolean).join('/')
+  if (spaceOk && transferOk) return { label, variant: 'good' }
+  if (!spaceOk && !transferOk) return { label, variant: 'bad' }
+  return { label, variant: 'ok' }
 }
 
 // "How close is this candidate's duration to the WA item's own duration" —
@@ -272,7 +352,6 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, isVideo, waDurati
   const hDist = c.hamming
   const tDist = c.thumb_hamming
   const isPartner = c.source === 'partner'
-  const cFilesize = 'filesize' in c ? c.filesize : null
 
   // H (videohash2-to-videohash2 or imagehash-to-imagehash) is a single
   // well-calibrated distance either way — full good/ok/bad coloring.
@@ -283,7 +362,18 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, isVideo, waDurati
 
   const durationVariant = closenessVariant(c.duration, waDuration)
   const resVariant = resolutionVariant(c.size, isVideo)
-  const fsVariant = filesizeVariant(cFilesize, isVideo)
+
+  // Prefer the exact filesize_bytes column; fall back to parsing the legacy
+  // filesize text for pre-migration rows where it's NULL.
+  const resolvedBytes = c.filesize_bytes ?? parseFileSizeBytes(c.filesize)
+  const filesizeDisplay = c.filesize_bytes != null ? fmtBytes(c.filesize_bytes) : fmtFilesize(c.filesize)
+  const fsVariant = filesizeVariant(resolvedBytes, isVideo)
+
+  const jpegQVariant = jpegQualityVariant(c.jpeg_quality)
+  const chroma = chromaInfo(c.pixel_format)
+  const hdr = hdrInfo(c.bit_depth, c.color_primaries)
+  const colorProfile = colorProfileInfo(c.color_space, c.color_transfer)
+  const colorRange = colorRangeInfo(c.color_range)
 
   return (
     <div style={{
@@ -340,8 +430,23 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, isVideo, waDurati
           {c.size && (
             <SmallBadge variant={resVariant || undefined}>{c.size}</SmallBadge>
           )}
-          {cFilesize && (
-            <SmallBadge variant={fsVariant || undefined}>{fmtFilesize(cFilesize)}</SmallBadge>
+          {filesizeDisplay && (
+            <SmallBadge variant={fsVariant || undefined}>{filesizeDisplay}</SmallBadge>
+          )}
+          {c.jpeg_quality != null && (
+            <SmallBadge variant={jpegQVariant || undefined}>Q:{c.jpeg_quality}</SmallBadge>
+          )}
+          {chroma && (
+            <SmallBadge variant={chroma.variant || undefined}>{chroma.label}</SmallBadge>
+          )}
+          {hdr && (
+            <SmallBadge variant={hdr.variant || undefined}>{hdr.label}</SmallBadge>
+          )}
+          {colorProfile && (
+            <SmallBadge variant={colorProfile.variant || undefined}>{colorProfile.label}</SmallBadge>
+          )}
+          {colorRange && (
+            <SmallBadge variant={colorRange.variant || undefined}>{colorRange.label}</SmallBadge>
           )}
           {'camera_name' in c && c.camera_name && (
             <SmallBadge style={{ background: 'rgba(34,197,94,.1)', color: '#4ade80' }}>📷</SmallBadge>

@@ -27,7 +27,36 @@ export interface WAItem {
   thumbnail_url: string
 }
 
-export interface HashCandidate {
+// Technical/codec metadata added to `hashes`/`partner` by
+// migration_technical_metadata.sql (see frontend_changes.md). All NULL for
+// rows inserted before that migration, and the four JPEG-only fields are
+// NULL for any non-JPEG file. `jpeg_quant_tables` (raw per-row DQT arrays)
+// isn't included — nothing in the UI needs the raw table, only the derived
+// jpeg_quality estimate.
+export interface TechnicalMetadata {
+  /** Exact byte count — new, reliable, and preferred over the `filesize`
+   * text column for sorting/filtering/display. NULL on pre-migration rows,
+   * in which case fall back to parsing `filesize`. */
+  filesize_bytes: number | null
+  /** Approximate JPEG quality (1-100), estimated from the quantization
+   * table. JPEG only. */
+  jpeg_quality: number | null
+  /** Bits per sample — usually 8; 10/12/16 for HEIC/HDR-ish content. */
+  bit_depth: number | null
+  /** ffprobe's raw pix_fmt string, e.g. "yuvj420p", "yuv420p10le", "rgb24" —
+   * encodes chroma subsampling. */
+  pixel_format: string | null
+  /** e.g. "bt709", "bt601", "bt2020". */
+  color_primaries: string | null
+  /** e.g. "bt709", "smpte170m". */
+  color_space: string | null
+  /** e.g. "bt709", "iec61966-2-1". */
+  color_transfer: string | null
+  /** "tv" (limited/16-235) or "pc" (full/0-255). */
+  color_range: string | null
+}
+
+export interface HashCandidate extends TechnicalMetadata {
   id: number
   filename: string
   camera_name: string | null
@@ -54,12 +83,15 @@ export interface HashCandidate {
   source: 'hashes'
 }
 
-export interface PartnerCandidate {
+export interface PartnerCandidate extends TechnicalMetadata {
   id: number
   filename: string
   timestamp: string | null
   url: string | null
   size: string | null
+  /** New alongside filesize_bytes — partner.py never populated this before;
+   * existing rows have both filesize and filesize_bytes as NULL. */
+  filesize: string | null
   duration: number | null
   hamming: number | null
   thumb_hamming: number | null
