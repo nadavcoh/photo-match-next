@@ -81,6 +81,7 @@ set the Supabase directory to `supabase` and the production branch to
 |---|---|
 | `20261031120000_search_modes_for_match_functions.sql` | Replaces the four `match_*` functions with the `p_mode` versions. Quick; safe anywhere, including an empty database. |
 | `20261031120100_rebuild_hnsw_indexes.sql` | Rebuilds the four HNSW indexes with `m = 32, ef_construction = 200`. **Slow and write-blocking on a populated database.** |
+| `20261031120200_fix_match_function_return_types.sql` | Fixes the first migration's functions, which failed on every call (a column-type mismatch, e.g. `duration` is `double precision`). Supersedes their definitions. Quick. |
 
 **Before the integration first applies these to production**, run the second
 one by hand so it has nothing left to build (the integration then just

@@ -228,6 +228,35 @@ SELECT count(*) FROM public.match_hashes_image(
 SELECT count(*) FROM public.match_hashes_image(
   '1111100000000011001011101110100001111100011110000100011011011001', 10);
 
+-- 4d. SMOKE TEST: every function in every mode runs without error against the
+--     real tables. Run this after ANY change to the functions. (An earlier
+--     version failed on every call with "structure of query does not match
+--     function result type" because the live `hashes.duration` is double
+--     precision while the function declares integer; a scratch database with
+--     the declared types didn't show it.) Expect 12 rows, no ERROR. Needs at
+--     least one row in each of `hashes` and `partner` (video rows for the
+--     video functions; if there are none, those four rows are skipped).
+SELECT 'hashes_image' AS fn, m AS mode,
+       (SELECT count(*) FROM public.match_hashes_image(
+          (SELECT hash_bit::text FROM public.hashes WHERE hash_bit IS NOT NULL LIMIT 1), 10, m)) AS rows
+FROM unnest(ARRAY['fast', 'wide', 'exact']) AS m
+UNION ALL
+SELECT 'partner_image', m,
+       (SELECT count(*) FROM public.match_partner_image(
+          (SELECT hash_bit::text FROM public.partner WHERE hash_bit IS NOT NULL LIMIT 1), 10, m))
+FROM unnest(ARRAY['fast', 'wide', 'exact']) AS m
+UNION ALL
+SELECT 'hashes_video', m,
+       (SELECT count(*) FROM public.match_hashes_video(NULL,
+          (SELECT video_thumb_hash_bit::text FROM public.hashes WHERE video_thumb_hash_bit IS NOT NULL LIMIT 1), 10, m))
+FROM unnest(ARRAY['fast', 'wide', 'exact']) AS m
+UNION ALL
+SELECT 'partner_video', m,
+       (SELECT count(*) FROM public.match_partner_video(NULL,
+          (SELECT video_thumb_hash_bit::text FROM public.partner WHERE video_thumb_hash_bit IS NOT NULL LIMIT 1), 10, m))
+FROM unnest(ARRAY['fast', 'wide', 'exact']) AS m
+ORDER BY 1, 2;
+
 -- 4c. hnsw.ef_search is transaction-local and set explicitly per call.
 --     Expect the two SHOWs to print 400 and then 40. Use psql for this one:
 --     the SQL Editor only displays the result of the last statement.
