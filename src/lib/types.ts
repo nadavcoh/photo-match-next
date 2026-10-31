@@ -103,6 +103,16 @@ export interface PartnerCandidate extends TechnicalMetadata {
 
 export type Candidate = HashCandidate | PartnerCandidate
 
+/**
+ * How candidates were searched. Maps to the `p_mode` argument of the
+ * match_* RPC functions (see supabase-rls-and-rpc.sql, Part 4):
+ *   fast  — approximate HNSW scan, hnsw.ef_search = 40 (default)
+ *   wide  — approximate HNSW scan, hnsw.ef_search = 400
+ *   exact — full scan, cannot miss a match
+ * The UI starts every item on 'fast' and escalates on request.
+ */
+export type SearchMode = 'fast' | 'wide' | 'exact'
+
 export interface MatchResponse {
   count: number
   offset: number
@@ -110,6 +120,8 @@ export interface MatchResponse {
   candidates: HashCandidate[]
   partner_candidates: PartnerCandidate[]
   auto_select_id: number | null
+  /** The mode these candidates came from. Omitted by older responses = 'fast'. */
+  search_mode?: SearchMode
 }
 
 export interface CommitRequest {

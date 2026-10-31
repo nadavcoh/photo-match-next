@@ -11,8 +11,8 @@ locked to one hardcoded email address.
 ## Stack
 
 - **Next.js 15** (App Router, TypeScript, React 19)
-- **Supabase** — Postgres (with `pgvector` for Hamming-distance queries),
-  Storage (thumbnails), Auth (GitHub OAuth)
+- **Supabase** — Postgres (with `pgvector` + HNSW indexes for Hamming-distance
+  queries), Storage (thumbnails), Auth (GitHub OAuth)
 - **Backblaze B2** (S3-compatible API) — full-size original media previews
 - **sharp** — server-side pixel-distance scoring
 - Deployed on **Vercel**
@@ -56,11 +56,52 @@ Run, in order, in the Supabase SQL editor:
    single allowed email
 2. `supabase-rls-and-rpc.sql` — enables RLS, adds storage policies, and
    creates the four `match_*_image`/`match_*_video` RPC functions used for
-   pgvector similarity queries
+   pgvector similarity queries (each takes an optional `p_mode` — see
+   [Search modes](#search-modes-and-the-search-wider-button))
+3. `sql/migration_2026-10-31_hnsw_rebuild.sql` — creates the four HNSW
+   indexes (or rebuilds existing ones with stronger parameters). **Run this
+   one from `psql`, not the SQL editor** — index builds outlast the editor's
+   timeout. Instructions are in the file header.
 
 You'll also need three Postgres tables (`wa`, `hashes`, `partner`) with
 `pgvector` `bit(64)` hash columns — see the RPC function definitions in
 `supabase-rls-and-rpc.sql` for the expected columns.
+
+**Upgrading an existing database** (one that already has the old two- and
+three-argument `match_*` functions): run
+`sql/migration_2026-10-31_escalation_functions.sql` in the SQL editor, then
+`sql/migration_2026-10-31_hnsw_rebuild.sql` from `psql`. The app works with
+either order, because it only sends `p_mode` when you press the escalate
+button.
+
+## Search modes and the "Search wider" button
+
+Candidate search uses HNSW indexes, which are *approximate*: they can miss a
+real match, and when they do the app just shows "no candidates". So each item
+can be searched at three depths:
+
+| Mode | What it does | Typical cost (≈150k rows) |
+|---|---|---|
+| `fast` (default) | HNSW, `hnsw.ef_search = 40` | a few ms |
+| `wide` | HNSW, `hnsw.ef_search = 400` | ~20 ms |
+| `exact` | full scan, cannot miss | ~35 ms (`hashes`) |
+
+Every item opens on `fast`. If the candidates look wrong, press **Search
+wider** (or `e`): the first press re-runs the item at `wide`, the second at
+`exact`. Committing, skipping, undoing, or refreshing (↻) reloads the item at
+`fast`; an escalated result is otherwise kept for the app's usual 30-second
+cache, so stepping back to an item you just escalated shows it as you left it.
+
+The measurements behind this, and the reasons for each design choice, are in
+[`CLAUDE.md`](./CLAUDE.md) under "HNSW recall and search modes".
+
+### Checking recall
+
+`sql/hnsw_recall_tests.sql` compares `fast` and `wide` against `exact` on real
+items from `wa`. Re-run it when the data has grown by a third or more, after a
+bulk import, after rebuilding an index or upgrading pgvector, or whenever a
+match you know exists isn't offered. (It's plain SQL — works in the SQL editor
+or `psql`.)
 
 ## Project structure
 
@@ -76,9 +117,11 @@ npm run start   # run a production build
 npm run lint    # next lint
 ```
 
-There is no automated test suite. Verify changes with:
+There is no automated test suite. Verify app changes with:
 
 ```bash
 npx tsc --noEmit
 npx next build
 ```
+
+Database-side checks live in `sql/` — see "Checking recall" above.

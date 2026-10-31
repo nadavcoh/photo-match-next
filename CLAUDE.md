@@ -39,7 +39,9 @@ scope — don't "fix" it into a more conventional architecture unless asked.
 src/app/page.tsx              ← THE app. One big client component (~800 lines):
                                  toasts, candidate grid, settings panel, keyboard
                                  shortcuts (←/→/n/p, Enter/c=commit, r=refresh,
-                                 1-9=pick candidate N), prefetch-next-item cache.
+                                 e=search wider, 1-9=pick candidate N),
+                                 prefetch-next-item cache, and the "Search
+                                 wider" escalate button (fast → wide → exact).
 src/components/WAMediaPreview.tsx
                                ← Full-size original media (photo/video) preview,
                                  shown only when item.filename starts with "Media".
@@ -48,6 +50,8 @@ src/components/WAMediaPreview.tsx
 src/app/api/match/route.ts    ← GET: next unmatched wa item + hashes/partner
                                  candidates (via RPC) + pixel-distance scoring +
                                  auto-select id. This is the core business logic.
+                                 `?offset=N` picks the item; `?mode=fast|wide|exact`
+                                 picks the search depth (default fast).
 src/app/api/match/commit/route.ts   ← POST: set wa.id_hash (or mark processed)
 src/app/api/match/skip/route.ts     ← POST: mark wa.processed = true
 src/app/api/match/undo/route.ts     ← POST: revert last commit/skip
@@ -70,7 +74,16 @@ src/app/login/page.tsx        ← "Sign in with GitHub" button
 src/app/auth/callback/route.ts← OAuth code → session exchange
 
 supabase-rls-and-rpc.sql      ← RLS policies + the 4 match_*_image/video() RPCs
+                                 (each with a p_mode: fast | wide | exact)
 supabase-auth-setup.txt       ← DB trigger restricting auth.users to one email
+sql/migration_2026-10-31_escalation_functions.sql
+                               ← Same functions as above, as a standalone migration
+                                 for an existing DB (generated from one source — keep
+                                 the two in sync if you edit either)
+sql/migration_2026-10-31_hnsw_rebuild.sql
+                               ← psql-only: (re)builds the 4 HNSW indexes with
+                                 m=32, ef_construction=200; safe to re-run
+sql/hnsw_recall_tests.sql     ← Recall/latency/behaviour checks for the match_* RPCs
 ```
 
 ### Two completely separate "media" concepts — don't conflate them
@@ -295,7 +308,10 @@ compare `wa.hash_bit` only to the candidate's `hash_bit` (**H:** badge), and
 reliable enough on its own to drive candidate selection or thresholding, so
 it plays no part in either the top-50 candidate-widening query or the
 `<= HAMMING_THRESHOLD` filter — a candidate is kept purely on
-`thumb_hamming`. `hamming` (**H:**) is still computed and returned on every
+`thumb_hamming`. (In `exact` mode that two-branch widening is replaced by one
+full scan comparing `COALESCE(video_thumb_hash_bit, hash_bit)` to the thumb
+hash, capped at the 50 closest rows overall instead of 50 per branch — same
+rule, applied to every row. See the next section.) `hamming` (**H:**) is still computed and returned on every
 row that has it (for display / manual judgment), it just never decides
 whether a row appears at all.
 
@@ -315,12 +331,111 @@ green/grey `lowDistanceVariant` for video candidates, since it can be either
 a true thumb-to-thumb comparison or the GIF-as-image fallback, and those
 aren't calibrated the same way. Image candidates never show T:.
 
+## HNSW recall and search modes (added Oct 2026)
+
+**The bug this fixed.** The `match_*` functions used to filter with
+`WHERE hash_bit <~> q <= threshold ORDER BY hash_bit <~> q LIMIT 50`. The
+`ORDER BY` lets the planner use the HNSW index, but HNSW returns only about
+`hnsw.ef_search` (default 40) nearest candidates and the `WHERE` is applied
+*afterwards* to those. When none of the 40 clears the threshold, you get zero
+rows — silently, no error — even if exact matches exist. It was found on a
+real item whose two distance-0 matches in `hashes` were never returned while
+`partner` found its match. Which plan the planner picks varies, so the failure
+was intermittent and invisible: "no candidates" looked the same as "no match".
+
+**What was measured** (one Supabase instance, `hashes` ≈ 153k rows with ~8%
+duplicate hashes, `partner` ≈ 86k rows; numbers will drift as data grows):
+
+| | Misses |
+|---|---|
+| Old index (m=16, ef_construction=64), synthetic queries, ef_search 40 | 18 of 323 queries |
+| Rebuilt (m=32, ef_construction=200), synthetic, ef_search 40 | 1 of 643 |
+| Rebuilt, synthetic, ef_search 400 | 0 of 305 |
+| Rebuilt, **real `wa` queries**, ef_search 40 | 6 of 1,000 queries (18 of 5,720 matches) |
+| Rebuilt, **real `wa` queries**, ef_search 400 | 0 of 400 (2,066 matches) |
+
+"Synthetic" = rows from `hashes` with ~8 random bits flipped. The rebuild
+helped far more on synthetic queries than on real ones; `ef_search = 400` is
+what removed the remaining misses on real data. Warm latency on `hashes`:
+fast ≈ 3 ms, wide ≈ 21 ms (13–74 ms seen), exact ≈ 35 ms; exact on `partner`
+≈ 15 ms. The very first `partner` exact run took ~1.5 s versus ~15 ms on the
+next three (cause not established — don't read much into a single slow call).
+
+**The design.**
+- Three modes, chosen per call via the optional `p_mode` argument of each
+  `match_*` function: `fast` (ef_search 40, the default), `wide` (400),
+  `exact` (no index). All four HNSW indexes are built with `m = 32,
+  ef_construction = 200`.
+- The UI starts every item on `fast`. The **Search wider** button (key `e`)
+  re-runs the *same offset* at `wide`, then `exact`. The API echoes
+  `search_mode` in the response, and the UI derives its current level from
+  that — so cached data carries its own level. Anything that fetches an item
+  fresh (commit, skip, undo, ↻, or navigating to an uncached offset) starts on
+  `fast`; an escalated result stays in the 30 s cache like any other and is
+  shown as the user left it. Prefetch (offset + 1) is always `fast`.
+- Why not just always use `exact`? It's ~35 ms and can't miss, and was the
+  simplest option; the escalation design was chosen instead to keep `fast`
+  quick for the common case. If maintaining it becomes a chore, switching the
+  default to `exact` is a one-line change in `route.ts` (`parseMode`) plus
+  dropping the HNSW indexes.
+
+**How it's wired — things not to "simplify".**
+- The functions are `plpgsql`, not `sql`, so they can call
+  `set_config('hnsw.ef_search', …, true)` (transaction-local, so it can't leak
+  across pooled connections). Both `fast` and `wide` set it explicitly, so
+  `fast` never inherits a wider value. Because of `set_config` they are
+  `VOLATILE`, not `STABLE`.
+- `#variable_conflict use_column` is required: `RETURNS TABLE` columns are
+  plpgsql variables and unqualified `id`, `filename`, … would otherwise be
+  "ambiguous".
+- `SET plan_cache_mode = force_custom_plan` keeps the planner choosing the HNSW
+  index from the real parameter values on every call.
+- The `exact` branches use `OFFSET 0` as an optimisation fence. Without it the
+  planner can push the `ORDER BY` into the HNSW index and the filter stops
+  being exact. Verified plan: Seq Scan + Sort.
+- `route.ts` only sends `p_mode` when it isn't `fast` (`withMode`), so the app
+  keeps working against a database that hasn't had the migration yet. RPC
+  errors used to be swallowed into an empty list; they're now logged, and in
+  `wide`/`exact` they're thrown so the user isn't told "nothing found" by a
+  search that never ran.
+- The old overloads `(text, integer)` / `(text, text, integer)` must be dropped
+  (both SQL files do this): left in place, a call without `p_mode` would be
+  ambiguous.
+
+**Operational notes.**
+- Index builds must run from `psql` over a direct/session connection (port
+  5432), with `max_parallel_maintenance_workers = 0` and `statement_timeout =
+  0`. In the SQL editor they fail three ways we hit: shared-memory error from
+  the parallel build, the statement timeout, and "Failed to fetch" when the
+  browser connection drops (the build kept running server-side).
+- `sql/migration_2026-10-31_hnsw_rebuild.sql` builds `_idx2` indexes next to
+  the old ones and swaps them in per index; re-running it rebuilds nothing.
+- **Re-run `sql/hnsw_recall_tests.sql` (Part 1) when the data has grown by
+  ~25–50%, after a bulk import, after any index rebuild or pgvector upgrade,
+  after changing `HAMMING_THRESHOLD`, or when a known match goes missing.**
+  Target: `wide_miss_q = 0`. If `wide` ever misses, raise the 400 (cap 1000)
+  in the SQL or make `exact` the default.
+- pgvector's iterative scans (`hnsw.iterative_scan`) were tried and rejected:
+  `strict_order` still missed; `relaxed_order` found the matches but was no
+  faster than `exact`.
+- Known weak spot, untested: in `fast`/`wide` the video functions' second
+  candidate branch filters `video_thumb_hash_bit IS NULL` *after* an HNSW scan
+  on `hash_bit`, so video rows can use up candidate slots. `exact` avoids it.
+- The SQL was validated on a scratch Postgres 16 + pgvector 0.8.0 with
+  synthetic data (modes behave as described, `exact` returns exactly the
+  brute-force result set), not against the production instance. After applying
+  it there, run the recall tests.
+
 ## Things to double check before assuming they're still true
 
 - The hardcoded allowed email (`Cohen.n@gmail.com`) in `middleware.ts` —
   confirm it's still current before changing auth behavior.
 - `HAMMING_THRESHOLD` env var (default `10` if unset) governs match
-  sensitivity in `/api/match` — ask before changing the default.
+  sensitivity in `/api/match` — ask before changing the default. Changing it
+  changes HNSW recall too: re-run `sql/hnsw_recall_tests.sql` (its threshold is
+  hardcoded as `10`).
+- The `fast`/`wide` search widths (40 / 400) are hardcoded in the SQL
+  functions, not env vars.
 - This file may drift from the code over time. If something here
   contradicts what you read in the actual source, the source wins — update
   this file to match.

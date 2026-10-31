@@ -13,6 +13,7 @@ import type {
   HashCandidate,
   Candidate,
   UndoState,
+  SearchMode,
 } from '@/lib/types'
 import { WAMediaPreview } from '@/components/WAMediaPreview'
 import { createClient } from '@/lib/supabase-client'
@@ -711,6 +712,28 @@ interface AppState {
 
 const CACHE_TTL = 30_000
 
+// "Search wider" escalation. Every item starts on 'fast' (approximate HNSW,
+// ef_search 40). The user can step it up when the candidates look wrong:
+// first click → 'wide' (ef_search 400), second click → 'exact' (full scan).
+// The mode each result came from is echoed by the API (`search_mode`), so the
+// current level is derived from the data itself — including cached data —
+// rather than tracked separately.
+const NEXT_SEARCH_MODE: Record<SearchMode, SearchMode | null> = {
+  fast: 'wide',
+  wide: 'exact',
+  exact: null,
+}
+const ESCALATE_LABEL: Record<SearchMode, string> = {
+  fast: '🔍 Not finding it? Search wider',
+  wide: '🎯 Still not there? Exact search',
+  exact: '✓ Exact search done',
+}
+const SEARCH_MODE_BADGE: Record<SearchMode, string | null> = {
+  fast: null,
+  wide: 'wide search',
+  exact: 'exact search',
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────────
 
 export default function Home(): JSX.Element {
@@ -725,6 +748,7 @@ export default function Home(): JSX.Element {
   const [online, setOnline] = useState(true)
   const [committing, setCommitting] = useState(false)
   const [undoing, setUndoing] = useState(false)
+  const [escalating, setEscalating] = useState(false)
   const { toasts, toast, remove: removeToast } = useToast()
   const cacheRef = useRef<Map<number, { data: MatchResponse; ts: number }>>(new Map())
 
@@ -816,6 +840,7 @@ export default function Home(): JSX.Element {
       if ((e.key === 'ArrowRight' || e.key === 'n') && state.data?.count) { void loadMatch(offset + 1); return }
       if ((e.key === 'ArrowLeft'  || e.key === 'p') && offset > 0)        { void loadMatch(offset - 1); return }
       if (e.key === 'r') { void loadMatch(offset, true); return }
+      if (e.key === 'e') { void doEscalate(); return }
       const num = parseInt(e.key, 10)
       if (num >= 1 && num <= 9) {
         const cards = document.querySelectorAll<HTMLElement>('[data-candidate-id]')
@@ -846,6 +871,33 @@ export default function Home(): JSX.Element {
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Commit failed', 'error')
     } finally { setCommitting(false) }
+  }
+
+  // Re-run the current item's candidate search one level deeper (fast → wide →
+  // exact). Stays on the same offset and keeps the page visible (no full-screen
+  // spinner); only the candidates and the auto-selection are replaced.
+  async function doEscalate() {
+    const current: SearchMode = state.data?.search_mode ?? 'fast'
+    const next = NEXT_SEARCH_MODE[current]
+    if (!next || escalating || state.loading || !state.data?.item) return
+    const at = state.offset
+    setEscalating(true)
+    try {
+      const data = await apiFetch<MatchResponse>(`/api/match?offset=${at}&mode=${next}`)
+      cacheRef.current.set(at, { data, ts: Date.now() })
+      const autoId = data.auto_select_id
+      // If the user navigated away while this was running, keep the result in
+      // the cache (keyed by its own offset) but don't touch the screen.
+      setState((s: AppState) => s.offset !== at ? s : {
+        ...s, data,
+        selectedId: autoId ?? null,
+        selectedSource: autoId ? 'hashes' : null,
+      })
+      const n = data.candidates.length + data.partner_candidates.length
+      toast(`${next === 'wide' ? 'Wide' : 'Exact'} search: ${n} candidate${n !== 1 ? 's' : ''}`, 'info')
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Search failed', 'error')
+    } finally { setEscalating(false) }
   }
 
   async function doSkip() {
@@ -906,6 +958,8 @@ export default function Home(): JSX.Element {
     ...(showPartner ? (data?.partner_candidates ?? []) : []),
   ]
   const itemIsVideo = (item?.filetype ?? '').toLowerCase().includes('video')
+  const searchMode: SearchMode = data?.search_mode ?? 'fast'
+  const modeBadge = SEARCH_MODE_BADGE[searchMode]
 
   return (
     <>
@@ -1008,9 +1062,23 @@ export default function Home(): JSX.Element {
                 ? ` + ${data.partner_candidates.length} partner` : ''}
             </SectionTitle>
 
+            {/* Escalate: re-search this item deeper (fast → wide → exact) */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+              <Btn
+                variant={searchMode === 'exact' ? 'ghost' : 'blue'}
+                onClick={() => void doEscalate()}
+                disabled={searchMode === 'exact' || escalating}
+                loading={escalating}
+              >
+                {ESCALATE_LABEL[searchMode]}
+              </Btn>
+              {modeBadge && <SmallBadge>{modeBadge}</SmallBadge>}
+            </div>
+
             {allCandidates.length === 0 ? (
               <div style={{ textAlign: 'center', padding: 30, color: 'var(--muted)', fontSize: '.85rem' }}>
                 No candidates found within threshold.
+                {searchMode !== 'exact' && ' Try searching wider.'}
               </div>
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10, marginBottom: 16 }}>
