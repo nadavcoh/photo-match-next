@@ -58,21 +58,52 @@ Run, in order, in the Supabase SQL editor:
    creates the four `match_*_image`/`match_*_video` RPC functions used for
    pgvector similarity queries (each takes an optional `p_mode` — see
    [Search modes](#search-modes-and-the-search-wider-button))
-3. `sql/migration_2026-10-31_hnsw_rebuild.sql` — creates the four HNSW
-   indexes (or rebuilds existing ones with stronger parameters). **Run this
-   one from `psql`, not the SQL editor** — index builds outlast the editor's
-   timeout. Instructions are in the file header.
+3. `supabase/migrations/20261031120100_rebuild_hnsw_indexes.sql` — creates
+   the four HNSW indexes (or rebuilds existing ones with stronger
+   parameters). **Run this one from `psql`, not the SQL editor** — index
+   builds outlast the editor's timeout. Instructions are in the file header.
 
 You'll also need three Postgres tables (`wa`, `hashes`, `partner`) with
 `pgvector` `bit(64)` hash columns — see the RPC function definitions in
 `supabase-rls-and-rpc.sql` for the expected columns.
 
-**Upgrading an existing database** (one that already has the old two- and
-three-argument `match_*` functions): run
-`sql/migration_2026-10-31_escalation_functions.sql` in the SQL editor, then
-`sql/migration_2026-10-31_hnsw_rebuild.sql` from `psql`. The app works with
-either order, because it only sends `p_mode` when you press the escalate
-button.
+### Migrations and the Supabase GitHub integration
+
+Database changes made after the initial setup live in `supabase/migrations/`
+as `YYYYMMDDHHMMSS_name.sql` files — the layout the Supabase CLI and the
+GitHub integration expect (`supabase/config.toml` is the standard
+`supabase init` output). They're plain SQL (no `psql` meta-commands),
+idempotent, and applied in timestamp order. In the integration's settings,
+set the Supabase directory to `supabase` and the production branch to
+`master`.
+
+| Migration | Notes |
+|---|---|
+| `20261031120000_search_modes_for_match_functions.sql` | Replaces the four `match_*` functions with the `p_mode` versions. Quick; safe anywhere, including an empty database. |
+| `20261031120100_rebuild_hnsw_indexes.sql` | Rebuilds the four HNSW indexes with `m = 32, ef_construction = 200`. **Slow and write-blocking on a populated database.** |
+
+**Before the integration first applies these to production**, run the second
+one by hand so it has nothing left to build (the integration then just
+records it):
+
+```bash
+psql "<direct connection string, port 5432>" \
+  -f supabase/migrations/20261031120100_rebuild_hnsw_indexes.sql
+```
+
+Pushing to the production branch is what triggers the integration to apply
+pending migrations, so do this first. Things to know:
+
+- The app tables (`wa`, `hashes`, `partner`) are not created by any migration,
+  so a **preview branch** starts without them. Both migrations succeed there
+  (the index one skips missing tables) but the branch can't run the app.
+  `supabase db pull` would capture a baseline migration if you want branches
+  to be usable.
+- `supabase/config.toml` says `major_version = 17`; it should match your
+  project's Postgres major version (`show server_version;`). It only matters
+  for local development and branches.
+- The app works with the migrations applied before or after it deploys: it
+  only sends `p_mode` when you press the escalate button.
 
 ## Search modes and the "Search wider" button
 

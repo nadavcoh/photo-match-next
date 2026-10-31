@@ -76,14 +76,20 @@ src/app/auth/callback/route.ts← OAuth code → session exchange
 supabase-rls-and-rpc.sql      ← RLS policies + the 4 match_*_image/video() RPCs
                                  (each with a p_mode: fast | wide | exact)
 supabase-auth-setup.txt       ← DB trigger restricting auth.users to one email
-sql/migration_2026-10-31_escalation_functions.sql
-                               ← Same functions as above, as a standalone migration
-                                 for an existing DB (generated from one source — keep
-                                 the two in sync if you edit either)
-sql/migration_2026-10-31_hnsw_rebuild.sql
-                               ← psql-only: (re)builds the 4 HNSW indexes with
-                                 m=32, ef_construction=200; safe to re-run
+supabase/config.toml          ← Standard `supabase init` output; makes the repo usable by
+                                 the Supabase CLI / GitHub integration
+supabase/migrations/20261031120000_search_modes_for_match_functions.sql
+                               ← Same functions as above, as a migration for an existing
+                                 DB (generated from one source — keep the two in sync if
+                                 you edit either). Quick, safe on an empty DB.
+supabase/migrations/20261031120100_rebuild_hnsw_indexes.sql
+                               ← (Re)builds the 4 HNSW indexes with m=32,
+                                 ef_construction=200. Pure SQL, idempotent, skips
+                                 tables that don't exist and indexes already done.
+                                 SLOW on prod — run via psql first (see header).
 sql/hnsw_recall_tests.sql     ← Recall/latency/behaviour checks for the match_* RPCs
+                                 (a test, not a migration — deliberately not in
+                                 supabase/migrations)
 ```
 
 ### Two completely separate "media" concepts — don't conflate them
@@ -399,7 +405,7 @@ next three (cause not established — don't read much into a single slow call).
   `wide`/`exact` they're thrown so the user isn't told "nothing found" by a
   search that never ran.
 - The old overloads `(text, integer)` / `(text, text, integer)` must be dropped
-  (both SQL files do this): left in place, a call without `p_mode` would be
+  (the migration and `supabase-rls-and-rpc.sql` both do this): left in place, a call without `p_mode` would be
   ambiguous.
 
 **Operational notes.**
@@ -408,8 +414,15 @@ next three (cause not established — don't read much into a single slow call).
   0`. In the SQL editor they fail three ways we hit: shared-memory error from
   the parallel build, the statement timeout, and "Failed to fetch" when the
   browser connection drops (the build kept running server-side).
-- `sql/migration_2026-10-31_hnsw_rebuild.sql` builds `_idx2` indexes next to
-  the old ones and swaps them in per index; re-running it rebuilds nothing.
+- `supabase/migrations/20261031120100_rebuild_hnsw_indexes.sql` builds `_idx2`
+  indexes next to the old ones and swaps them in per index; re-running it
+  rebuilds nothing. It's plain SQL so the Supabase CLI/GitHub integration can
+  apply it, but it runs the whole file at once with the runner's own limits,
+  so on a populated database run it via `psql -f` first (the integration then
+  finds nothing left to build). Pushing to the production branch is what makes
+  the integration apply pending migrations — do the psql step before that.
+- No `CREATE INDEX CONCURRENTLY` (can't run in a transaction); the brief write
+  lock is accepted for this single-user app.
 - **Re-run `sql/hnsw_recall_tests.sql` (Part 1) when the data has grown by
   ~25–50%, after a bulk import, after any index rebuild or pgvector upgrade,
   after changing `HAMMING_THRESHOLD`, or when a known match goes missing.**
@@ -444,6 +457,12 @@ next three (cause not established — don't read much into a single slow call).
 
 - Package modified/new files as a `tar.gz` archive when delivering changes
   rather than presenting individual files inline.
+- Schema/function changes go in `supabase/migrations/<YYYYMMDDHHMMSS>_name.sql`:
+  plain SQL, idempotent, no `psql` meta-commands (`\set`, `\gexec`, …), and
+  keep `supabase-rls-and-rpc.sql` in sync for fresh installs. Test a migration
+  with the real runner before committing: `supabase db push --db-url
+  postgresql://…?sslmode=disable` against a scratch database (this is how the
+  HNSW migrations were verified).
 - No test suite exists; verify changes with `npx tsc --noEmit` and
   `npx next build` rather than assuming.
 - Keep the inline-style, single-file-component conventions already in
