@@ -16,12 +16,38 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase-server'
 import { thumbnailStoragePath, thumbnailUrl, THUMBNAILS_BUCKET, ThumbnailPrefix } from '@/lib/thumbnails'
 import { pixelDistance, pixelDistanceFallback } from '@/lib/pixelDistance'
-import type { WAItem, HashCandidate, PartnerCandidate, MatchResponse } from '@/lib/types'
+import type { WAItem, HashCandidate, PartnerCandidate, MatchResponse, SearchMode } from '@/lib/types'
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
 function getThreshold(): number {
   return parseInt(process.env.HAMMING_THRESHOLD ?? '10', 10)
+}
+
+/** `?mode=` query parameter → SearchMode; anything unrecognised is 'fast'. */
+function parseMode(v: string | null): SearchMode {
+  return v === 'wide' || v === 'exact' ? v : 'fast'
+}
+
+/**
+ * Adds p_mode to an RPC's arguments only when escalating. 'fast' is the SQL
+ * default, so omitting it keeps the app working against a database that
+ * hasn't had sql/migration_2026-10-31_escalation_functions.sql applied yet.
+ */
+function withMode<T extends Record<string, unknown>>(args: T, mode: SearchMode): T & { p_mode?: SearchMode } {
+  return mode === 'fast' ? args : { ...args, p_mode: mode }
+}
+
+/**
+ * RPC errors used to be swallowed into an empty candidate list, which looks
+ * exactly like "no matches". Always log them; when the user explicitly asked
+ * for a wider/exact search, fail loudly so they aren't told "nothing found"
+ * by a search that never ran.
+ */
+function rpcFailed(fn: string, message: string, mode: SearchMode): never[] {
+  console.error(`[/api/match] ${fn} (${mode}) failed:`, message)
+  if (mode !== 'fast') throw new Error(`${fn} failed in ${mode} mode: ${message}`)
+  return []
 }
 
 function isVideoFiletype(filetype: string): boolean {
@@ -118,15 +144,17 @@ async function fetchHashesCandidates(
   waItem: WAItem,
   isVideo: boolean,
   threshold: number,
+  mode: SearchMode,
 ): Promise<HashCandidate[]> {
   if (!isVideo) {
     if (!waItem.hash_bit) return []
 
-    const { data, error } = await supabase.rpc('match_hashes_image', {
+    const { data, error } = await supabase.rpc('match_hashes_image', withMode({
       p_hash_bit: waItem.hash_bit,
       p_threshold: threshold,
-    })
-    if (error || !data) return []
+    }, mode))
+    if (error) return rpcFailed('match_hashes_image', error.message, mode)
+    if (!data) return []
 
     return (data as HashesRpcRow[]).map((r) => ({
       id: r.id,
@@ -156,12 +184,13 @@ async function fetchHashesCandidates(
   // including the GIF-as-image edge case.
   if (!waItem.hash_bit && !waItem.video_thumb_hash_bit) return []
 
-  const { data, error } = await supabase.rpc('match_hashes_video', {
+  const { data, error } = await supabase.rpc('match_hashes_video', withMode({
     p_hash_bit: waItem.hash_bit,
     p_thumb_bit: waItem.video_thumb_hash_bit,
     p_threshold: threshold,
-  })
-  if (error || !data) return []
+  }, mode))
+  if (error) return rpcFailed('match_hashes_video', error.message, mode)
+  if (!data) return []
 
   return (data as HashesRpcRow[]).map((r) => ({
     id: r.id,
@@ -189,15 +218,17 @@ async function fetchPartnerCandidates(
   waItem: WAItem,
   isVideo: boolean,
   threshold: number,
+  mode: SearchMode,
 ): Promise<PartnerCandidate[]> {
   if (!isVideo) {
     if (!waItem.hash_bit) return []
 
-    const { data, error } = await supabase.rpc('match_partner_image', {
+    const { data, error } = await supabase.rpc('match_partner_image', withMode({
       p_hash_bit: waItem.hash_bit,
       p_threshold: threshold,
-    })
-    if (error || !data) return []
+    }, mode))
+    if (error) return rpcFailed('match_partner_image', error.message, mode)
+    if (!data) return []
 
     return (data as PartnerRpcRow[]).map((r) => ({
       id: r.id,
@@ -218,12 +249,13 @@ async function fetchPartnerCandidates(
 
   if (!waItem.hash_bit && !waItem.video_thumb_hash_bit) return []
 
-  const { data, error } = await supabase.rpc('match_partner_video', {
+  const { data, error } = await supabase.rpc('match_partner_video', withMode({
     p_hash_bit: waItem.hash_bit,
     p_thumb_bit: waItem.video_thumb_hash_bit,
     p_threshold: threshold,
-  })
-  if (error || !data) return []
+  }, mode))
+  if (error) return rpcFailed('match_partner_video', error.message, mode)
+  if (!data) return []
 
   return (data as PartnerRpcRow[]).map((r) => ({
     id: r.id,
@@ -306,6 +338,7 @@ function computeAutoSelect(
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const { searchParams } = new URL(request.url)
   const offset    = Math.max(0, parseInt(searchParams.get('offset') ?? '0', 10))
+  const mode      = parseMode(searchParams.get('mode'))
   const threshold = getThreshold()
 
   try {
@@ -323,7 +356,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const total = count ?? 0
     if (total === 0) {
       return NextResponse.json(
-        { count: 0, offset, item: null, candidates: [], partner_candidates: [], auto_select_id: null } as MatchResponse,
+        { count: 0, offset, item: null, candidates: [], partner_candidates: [], auto_select_id: null, search_mode: mode } as MatchResponse,
         { headers: { 'Cache-Control': 'no-store' } }
       )
     }
@@ -341,7 +374,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     if (waError) throw new Error(waError.message)
     if (!waRows?.length) {
       return NextResponse.json(
-        { count: 0, offset, item: null, candidates: [], partner_candidates: [], auto_select_id: null } as MatchResponse,
+        { count: 0, offset, item: null, candidates: [], partner_candidates: [], auto_select_id: null, search_mode: mode } as MatchResponse,
         { headers: { 'Cache-Control': 'no-store' } }
       )
     }
@@ -370,9 +403,16 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const isVideo = isVideoFiletype(waItem.filetype)
 
     // ── Fetch candidates (hashes + partner) in parallel ────────────────────
+    // `mode` picks the search depth (fast → wide → exact; see SearchMode).
+    // Partner is optional, so its failures are swallowed — except when the
+    // user explicitly escalated, where a silent empty result would be
+    // misleading.
     const [candidates, partnerCandidates] = await Promise.all([
-      fetchHashesCandidates(supabase, waItem, isVideo, threshold),
-      fetchPartnerCandidates(supabase, waItem, isVideo, threshold).catch((): PartnerCandidate[] => []),
+      fetchHashesCandidates(supabase, waItem, isVideo, threshold, mode),
+      fetchPartnerCandidates(supabase, waItem, isVideo, threshold, mode).catch((e: unknown): PartnerCandidate[] => {
+        if (mode !== 'fast') throw e
+        return []
+      }),
     ])
 
     // ── Download all thumbnails for pixel-distance computation ─────────────
@@ -416,6 +456,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         candidates: candidatesWithPx,
         partner_candidates: partnerCandidatesWithPx,
         auto_select_id,
+        search_mode: mode,
       } as MatchResponse,
       { headers: { 'Cache-Control': 'no-store' } }
     )
