@@ -82,6 +82,10 @@ supabase/migrations/20261031120000_search_modes_for_match_functions.sql
                                ← Same functions as above, as a migration for an existing
                                  DB (generated from one source — keep the two in sync if
                                  you edit either). Quick, safe on an empty DB.
+supabase/migrations/20261031120200_fix_match_function_return_types.sql
+                               ← Supersedes the function definitions in ...120000 (those
+                                 failed on every call — see "explicit casts" below).
+                                 Same text as supabase-rls-and-rpc.sql Part 4/5.
 supabase/migrations/20261031120100_rebuild_hnsw_indexes.sql
                                ← (Re)builds the 4 HNSW indexes with m=32,
                                  ef_construction=200. Pure SQL, idempotent, skips
@@ -394,6 +398,15 @@ next three (cause not established — don't read much into a single slow call).
 - `#variable_conflict use_column` is required: `RETURNS TABLE` columns are
   plpgsql variables and unqualified `id`, `filename`, … would otherwise be
   "ambiguous".
+- **Every output column is explicitly cast to its declared type**
+  (`a.duration::integer AS duration`, …). plpgsql's `RETURN QUERY` needs an
+  exact type match; the old `LANGUAGE sql` functions applied assignment casts,
+  so they tolerated tables whose types differ from the declarations — and
+  production's do (`hashes.duration` is `double precision`). The first version
+  of the new functions omitted the casts and failed on every call in every
+  mode ("structure of query does not match function result type"); because
+  `fast` swallows RPC errors the app just showed "no candidates". Fixed by
+  migration `…120200`. float → integer rounds, as before. Don't drop the casts.
 - `SET plan_cache_mode = force_custom_plan` keeps the planner choosing the HNSW
   index from the real parameter values on every call.
 - The `exact` branches use `OFFSET 0` as an optimisation fence. Without it the
@@ -434,10 +447,14 @@ next three (cause not established — don't read much into a single slow call).
 - Known weak spot, untested: in `fast`/`wide` the video functions' second
   candidate branch filters `video_thumb_hash_bit IS NULL` *after* an HNSW scan
   on `hash_bit`, so video rows can use up candidate slots. `exact` avoids it.
-- The SQL was validated on a scratch Postgres 16 + pgvector 0.8.0 with
+- The SQL was validated on scratch Postgres 16 + pgvector 0.8.0 databases with
   synthetic data (modes behave as described, `exact` returns exactly the
-  brute-force result set), not against the production instance. After applying
-  it there, run the recall tests.
+  brute-force result set), not against the production instance. **The scratch
+  tables must use column types that differ from the function declarations**
+  (e.g. `duration double precision`, `id bigint`, `varchar` text columns) —
+  the first version passed on a scratch DB whose types matched exactly and
+  then failed in production. After applying any function change there, run
+  `sql/hnsw_recall_tests.sql` Part 4d (smoke test) and Part 1 (recall).
 
 ## Things to double check before assuming they're still true
 
@@ -459,7 +476,9 @@ next three (cause not established — don't read much into a single slow call).
   rather than presenting individual files inline.
 - Schema/function changes go in `supabase/migrations/<YYYYMMDDHHMMSS>_name.sql`:
   plain SQL, idempotent, no `psql` meta-commands (`\set`, `\gexec`, …), and
-  keep `supabase-rls-and-rpc.sql` in sync for fresh installs. Test a migration
+  keep `supabase-rls-and-rpc.sql` in sync for fresh installs. Never edit a
+  migration that may already have been applied — add a new one (that's why
+  `…120200` exists). Test a migration
   with the real runner before committing: `supabase db push --db-url
   postgresql://…?sslmode=disable` against a scratch database (this is how the
   HNSW migrations were verified).
