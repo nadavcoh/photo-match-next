@@ -32,7 +32,8 @@ function parseMode(v: string | null): SearchMode {
 /**
  * Adds p_mode to an RPC's arguments only when escalating. 'fast' is the SQL
  * default, so omitting it keeps the app working against a database that
- * hasn't had sql/migration_2026-10-31_escalation_functions.sql applied yet.
+ * hasn't had supabase/migrations/20261031120000_search_modes_for_match_functions.sql
+ * applied yet.
  */
 function withMode<T extends Record<string, unknown>>(args: T, mode: SearchMode): T & { p_mode?: SearchMode } {
   return mode === 'fast' ? args : { ...args, p_mode: mode }

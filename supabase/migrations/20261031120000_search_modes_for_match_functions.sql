@@ -1,29 +1,29 @@
 -- =============================================================================
--- Migration: search modes for the match_* RPC functions
--- Date: 2026-10-31
+-- Search modes for the match_* RPC functions
 --
--- Run once in the Supabase SQL Editor (it is quick and safe to re-run).
--- Run it BEFORE, or any time after, deploying the matching app change — the
--- app only sends p_mode when the user presses "Search wider", so the app and
--- the database can be updated in either order.
---
--- What it does
--- ────────────
 -- Replaces the four match_* functions with versions that take an optional
 -- p_mode ('fast' | 'wide' | 'exact', default 'fast'):
---   fast  — HNSW, hnsw.ef_search = 40
---   wide  — HNSW, hnsw.ef_search = 400
---   exact — full scan, cannot miss
--- Background: the old functions filtered by distance AFTER an approximate
--- HNSW scan, so they could silently return no candidates for items that do
--- have matches. See CLAUDE.md, "HNSW recall and search modes".
+--   fast  — HNSW index scan, hnsw.ef_search = 40
+--   wide  — HNSW index scan, hnsw.ef_search = 400
+--   exact — full scan, cannot miss a match
+--
+-- Background: the old functions applied the distance threshold AFTER an
+-- approximate HNSW scan that only examines ~ef_search candidates, so a real
+-- match could be silently dropped and the UI showed "no candidates". See
+-- CLAUDE.md, "HNSW recall and search modes".
+--
+-- Safe to re-run, and safe on a database that doesn't have the app tables yet
+-- (a fresh Supabase branch): plpgsql bodies are not checked against tables at
+-- creation time.
+--
+-- The app only sends p_mode when the user presses "Search wider", so this
+-- migration and the app deploy can land in either order.
 --
 -- This is the same function text as Part 4/5 of supabase-rls-and-rpc.sql
--- (generated from one source). A fresh install only needs that file.
+-- (generated from one source); a fresh install of the app can use that file
+-- instead. Keep the two in sync if you edit either.
 --
--- Separate step, run from psql (NOT the dashboard): the HNSW index rebuild in
--- sql/migration_2026-10-31_hnsw_rebuild.sql. Do it before relying on
--- 'fast' mode — fast mode is only as good as the index behind it.
+-- Companion migration: 20261031120100_rebuild_hnsw_indexes.sql.
 -- =============================================================================
 
 -- ─── PART 4: RPC FUNCTIONS ──────────────────────────────────────────────────

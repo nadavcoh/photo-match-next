@@ -1,0 +1,7 @@
+# Supabase CLI state — local/linked-project cache, never commit
+.branches
+.temp
+
+# dotenvs
+.env.local
+.env.*.local
