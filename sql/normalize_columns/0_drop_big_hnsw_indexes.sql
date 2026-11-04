@@ -1,0 +1,23 @@
+-- =============================================================================
+-- Normalize hashes/partner columns — STEP 0 (optional, recommended): drop the
+-- two big HNSW indexes before the backfill, rebuild them in step 6.
+--
+-- Why: see the PERFORMANCE note in 1_backfill.sql. Dropping them turns a
+-- ~15-20 min backfill into seconds, and they have to be rebuilt anyway to give
+-- back the space the backfill/contract leave behind. Nothing is lost: the
+-- indexes are derived data.
+--
+-- While they are gone the match_* functions still work — the planner falls
+-- back to a sequential scan, which is exactly what 'exact' mode does (~35 ms
+-- hashes, ~15 ms partner), so 'fast' mode is simply exact for a while.
+--
+-- The small thumb-hash indexes (video rows only, ~8 MB total) and wa's index
+-- are left alone: backfill barely touches them.
+--
+-- STEP 6 re-creates the two indexes: run
+--   supabase/migrations/20261031120100_rebuild_hnsw_indexes.sql
+-- with psql (it builds any missing one with m=32, ef_construction=200 and skips
+-- the ones that already exist with those options).
+-- =============================================================================
+drop index if exists public.hashes_hash_bit_hnsw_idx;
+drop index if exists public.partner_hash_bit_hnsw_idx;
