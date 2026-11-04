@@ -30,11 +30,6 @@ function fmtDate(iso: string | null | undefined): string {
   return new Date(iso).toLocaleDateString()
 }
 
-function fmtFilesize(s: string | null | undefined): string {
-  if (!s) return ''
-  return s.match(/\(([^)]+)\)/)?.[1] ?? s
-}
-
 function fmtBytes(bytes: number | null | undefined): string {
   if (bytes == null || !isFinite(bytes) || bytes < 0) return ''
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -82,23 +77,13 @@ function resolutionVariant(sizeStr: string | null | undefined, isVideo: boolean)
   return 'bad'
 }
 
-function parseFileSizeBytes(s: string | null | undefined): number | null {
-  const display = fmtFilesize(s)
-  const m = display.match(/([\d.]+)\s*(B|KB|MB|GB|TB)\b/i)
-  if (!m) return null
-  const n = parseFloat(m[1])
-  const mult: Record<string, number> = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 }
-  return n * (mult[m[2].toUpperCase()] ?? 1)
-}
-
 // Same tiering philosophy as resolutionVariant, applied to file size instead
 // of pixel dimensions — same absolute-threshold reasoning applies (no wa
 // reference to compare against). These byte cutoffs are a rough proxy for
 // the resolution tiers (full-quality capture vs. WhatsApp HD vs. WhatsApp
 // default/low-res compression) — tune them if real files cluster elsewhere.
-// Takes resolved bytes rather than a string — callers should prefer the
-// exact filesize_bytes column and only fall back to parsing the legacy
-// filesize text when it's NULL (pre-migration rows).
+// Takes bytes (filesize_bytes — the only file-size field; the legacy filesize
+// text column was merged into it).
 const MB = 1024 * 1024
 function filesizeVariant(bytes: number | null, isVideo: boolean): '' | 'good' | 'ok' | 'bad' {
   if (bytes == null) return ''
@@ -384,11 +369,8 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, isVideo, waDurati
   const durationVariant = closenessVariant(c.duration, waDuration)
   const resVariant = resolutionVariant(c.size, isVideo)
 
-  // Prefer the exact filesize_bytes column; fall back to parsing the legacy
-  // filesize text for pre-migration rows where it's NULL.
-  const resolvedBytes = c.filesize_bytes ?? parseFileSizeBytes(c.filesize)
-  const filesizeDisplay = c.filesize_bytes != null ? fmtBytes(c.filesize_bytes) : fmtFilesize(c.filesize)
-  const fsVariant = filesizeVariant(resolvedBytes, isVideo)
+  const filesizeDisplay = fmtBytes(c.filesize_bytes)
+  const fsVariant = filesizeVariant(c.filesize_bytes, isVideo)
 
   const jpegQVariant = jpegQualityVariant(c.jpeg_quality)
   const chroma = chromaInfo(c.pixel_format)
