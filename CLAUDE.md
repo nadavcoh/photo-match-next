@@ -91,6 +91,17 @@ supabase/migrations/20261031120100_rebuild_hnsw_indexes.sql
                                  ef_construction=200. Pure SQL, idempotent, skips
                                  tables that don't exist and indexes already done.
                                  SLOW on prod — run via psql first (see header).
+supabase/migrations/20261103120000_normalize_columns_expand.sql
+                               ← DDL for the normalized columns (lookup tables, new
+                                 columns, URL builders) — see "Normalized columns".
+supabase/migrations/20261103120100_match_functions_read_normalized_columns.sql
+                               ← Supersedes ...120200: match_* rebuild url/size/location/
+                                 origin/... from the normalized columns and no longer
+                                 return `filesize`. Same text as supabase-rls-and-rpc.sql
+                                 Part 4/5.
+sql/normalize_columns/        ← Runbook (README.md) + manual psql scripts for that
+                                 change: backfill, contract (drops old columns),
+                                 VACUUM FULL. Deliberately not in supabase/migrations.
 sql/hnsw_recall_tests.sql     ← Recall/latency/behaviour checks for the match_* RPCs
                                  (a test, not a migration — deliberately not in
                                  supabase/migrations)
@@ -213,17 +224,17 @@ against. This shapes the three badges differently:
   - These cutoffs are a judgment call, not a spec from WhatsApp/phone
     vendors — tune the constants in `resolutionVariant` if real-world
     candidates cluster differently.
-- **Filesize** (`c.filesize` / `c.filesize_bytes`) — same absolute-threshold
+- **Filesize** (`c.filesize_bytes`) — same absolute-threshold
   philosophy as resolution, applied to bytes instead of pixels
-  (`filesizeVariant` in `page.tsx`). Prefers the exact `filesize_bytes`
-  column (see migration below); falls back to parsing the legacy `filesize`
-  text via `parseFileSizeBytes` for pre-migration rows where it's NULL:
+  (`filesizeVariant` in `page.tsx`). `filesize_bytes` is the only file-size
+  field: the legacy `filesize` text column was merged into it (see "Normalized
+  columns" below), so there is no text fallback any more:
   - Video: ≥8MB → green, ≥1MB → yellow, below → red.
   - Image: ≥2MB → green, ≥200KB → yellow, below → red.
   - These are a rough proxy for the same three tiers as resolution (full
     capture / WhatsApp HD / WhatsApp default), not a measured mapping —
     tune them if real files land somewhere unexpected. `partner` didn't
-    select `filesize` at all until the technical-metadata migration below —
+    select a file size at all until the technical-metadata migration below —
     see that section for what's now available on both tables.
 
 `WAItemCard` only ever shows `wa`'s own `duration` badge (uncolored, it's
@@ -486,3 +497,44 @@ next three (cause not established — don't read much into a single slow call).
   `npx next build` rather than assuming.
 - Keep the inline-style, single-file-component conventions already in
   `page.tsx` unless explicitly asked to refactor.
+
+## Normalized columns (database-size reduction)
+
+`hashes`/`partner` used to store several values as bulky text. They are now
+stored compactly and **rebuilt by the `match_*` functions**, so the JSON the
+app receives is unchanged — with one exception: `filesize` (text) no longer
+exists in the RPC output, types or UI.
+
+| Was (text/jsonb) | Now | Rebuilt as |
+|---|---|---|
+| `url` | `photo_id` (NOT NULL, `^[A-Za-z0-9_-]+$`) | `gphoto_photo_url()` / `gphoto_partner_photo_url()` |
+| `location` (maps URL) | `lat`, `lon` (`float8`) | `gphoto_location_url(lat, lon)` |
+| `size` ("W × H") | `width`, `height` (`int4`) | `width || ' × ' || height` |
+| `origin`, `camera_name`, `location_name` | `origin_id`, `camera_name_id`, `location_name_id` → `origins`, `camera_names`, `location_names` | scalar sub-selects |
+| `jpeg_quant_tables` (~1.5 KB jsonb/row) | `quant_profile_id` → `jpeg_quant_profiles` (keyed by md5 of the jsonb; not exposed via RLS) | not returned |
+| `filesize` (text) | merged into `filesize_bytes` | — |
+
+Things to remember:
+- **Current state (Nov 2026).** Runbook steps 0–3 are done on the live DB (the
+  old columns still exist; contract/`VACUUM FULL` are pending until the TV
+  app, LAN server and scrapers are updated). The two big HNSW indexes
+  (`hashes_hash_bit_hnsw_idx`, `partner_hash_bit_hnsw_idx`) are currently
+  DROPPED, so `fast`/`wide` behave like `exact` until runbook step 6 rebuilds
+  them. Check `pg_indexes` before assuming they exist.
+- **`filesize_bytes` is mixed precision.** Rows scraped after the technical-
+  metadata migration have the exact on-disk size; older rows were back-filled
+  by parsing Google Photos' display text with decimal units (KB = 1000), i.e.
+  display precision. For MB-sized files Google's "backed up" size also often
+  differs from the downloaded file. Fine for the good/ok/bad badge tiers; do
+  not treat it as exact.
+- The partner-library id is hard-coded in `gphoto_partner_photo_url()` (and in
+  `partner.py`). A URL for any other library is refused by the scraper.
+- The lookup tables need the authenticated SELECT policy (the functions are
+  SECURITY INVOKER). `jpeg_quant_profiles` deliberately has none.
+- Inserts without a valid `photo_id` are rejected by the database
+  (`NOT NULL` + `CHECK`) once the contract step has run; the scrapers also
+  validate before inserting.
+- A table rewrite (`VACUUM FULL`, or any `ALTER` that rewrites) rebuilds the
+  HNSW indexes. Updating every row without dropping them first is slow
+  (≈3 ms/row per HNSW index on a 15k-row copy). See
+  `sql/normalize_columns/README.md` for the procedure that was used.
