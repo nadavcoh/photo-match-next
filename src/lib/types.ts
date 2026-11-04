@@ -34,9 +34,10 @@ export interface WAItem {
 // isn't included — nothing in the UI needs the raw table, only the derived
 // jpeg_quality estimate.
 export interface TechnicalMetadata {
-  /** Exact byte count — new, reliable, and preferred over the `filesize`
-   * text column for sorting/filtering/display. NULL on pre-migration rows,
-   * in which case fall back to parsing `filesize`. */
+  /** File size in bytes — the only file-size field (the legacy `filesize`
+   * text column was merged into it). Exact for files the scrapers downloaded
+   * themselves; for older rows it was parsed from Google Photos' display text
+   * (decimal units, display precision), so treat small differences as noise. */
   filesize_bytes: number | null
   /** Approximate JPEG quality (1-100), estimated from the quantization
    * table. JPEG only. */
@@ -65,7 +66,6 @@ export interface HashCandidate extends TechnicalMetadata {
   timestamp: string | null
   url: string | null
   size: string | null
-  filesize: string | null
   origin: string | null
   duration: number | null
   /** videohash2-to-videohash2 distance. Null when not comparable (image
@@ -89,9 +89,6 @@ export interface PartnerCandidate extends TechnicalMetadata {
   timestamp: string | null
   url: string | null
   size: string | null
-  /** New alongside filesize_bytes — partner.py never populated this before;
-   * existing rows have both filesize and filesize_bytes as NULL. */
-  filesize: string | null
   duration: number | null
   hamming: number | null
   thumb_hamming: number | null

@@ -106,7 +106,6 @@ interface HashesRpcRow extends TechnicalMetadataRpcRow {
   ts: string | null          // timestamptz → ISO string
   url: string | null
   size: string | null
-  filesize: string | null
   origin: string | null
   duration: number | null
   hamming: number | null       // videohash2-to-videohash2 distance (video rows only); always set for image matching
@@ -119,7 +118,6 @@ interface PartnerRpcRow extends TechnicalMetadataRpcRow {
   ts: string | null
   url: string | null
   size: string | null
-  filesize: string | null
   duration: number | null
   hamming: number | null
   thumb_hamming: number | null
@@ -166,7 +164,6 @@ async function fetchHashesCandidates(
       timestamp: isoOrNull(r.ts),
       url: r.url,
       size: r.size,
-      filesize: r.filesize,
       origin: r.origin,
       duration: r.duration,
       hamming: r.hamming,
@@ -202,7 +199,6 @@ async function fetchHashesCandidates(
     timestamp: isoOrNull(r.ts),
     url: r.url,
     size: r.size,
-    filesize: r.filesize,
     origin: r.origin,
     duration: r.duration,
     hamming: r.hamming,
@@ -237,7 +233,6 @@ async function fetchPartnerCandidates(
       timestamp: isoOrNull(r.ts),
       url: r.url,
       size: r.size,
-      filesize: r.filesize,
       duration: r.duration,
       hamming: r.hamming,
       thumb_hamming: null,
@@ -264,7 +259,6 @@ async function fetchPartnerCandidates(
     timestamp: isoOrNull(r.ts),
     url: r.url,
     size: r.size,
-    filesize: r.filesize,
     duration: r.duration,
     hamming: r.hamming,
     thumb_hamming: r.thumb_hamming,
