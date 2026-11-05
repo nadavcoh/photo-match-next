@@ -14,6 +14,8 @@
 -- 3. Creates a storage.objects policy so the authenticated browser client can
 --    generate signed URLs and the server-side client can download bytes for
 --    pixel-distance computation — no service role key required.
+-- (Prerequisite for Parts 2b and 4: the normalized-columns migration
+--  20261103120000_normalize_columns_expand.sql + sql/normalize_columns/1_backfill.sql.)
 -- 4. Creates four PostgreSQL RPC functions for the pgvector <~> similarity
 --    queries, which the Supabase JS client calls via .rpc(). Using SECURITY
 --    INVOKER ensures RLS on the underlying tables is still enforced.
@@ -24,14 +26,14 @@
 -- =============================================================================
 
 
--- ─── PART 1: ENABLE ROW LEVEL SECURITY ──────────────────────────────────────
+-- ─── PART 1: ENABLE ROW LEVEL SECURITY ──────────────────────────────────────────────────────
 
 ALTER TABLE public.wa      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.hashes  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.partner ENABLE ROW LEVEL SECURITY;
 
 
--- ─── PART 2: RLS POLICIES ───────────────────────────────────────────────────
+-- ─── PART 2: RLS POLICIES ───────────────────────────────────────────────────────────────────────
 --
 -- Each policy uses TO authenticated so the anon role (unauthenticated) can
 -- never access any row. The middleware also enforces auth, so this is a
@@ -59,8 +61,25 @@ CREATE POLICY "partner_authenticated_select" ON public.partner
   TO authenticated
   USING (true);
 
+-- origins / camera_names / location_names: small lookup tables created by
+-- supabase/migrations/20261103120000_normalize_columns_expand.sql. The match_*
+-- functions are SECURITY INVOKER and read them, so they need the same
+-- read-only policy. (jpeg_quant_profiles is deliberately NOT exposed.)
+ALTER TABLE public.origins        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.camera_names   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.location_names ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "origins_authenticated_select" ON public.origins;
+CREATE POLICY "origins_authenticated_select" ON public.origins
+  FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "camera_names_authenticated_select" ON public.camera_names;
+CREATE POLICY "camera_names_authenticated_select" ON public.camera_names
+  FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "location_names_authenticated_select" ON public.location_names;
+CREATE POLICY "location_names_authenticated_select" ON public.location_names
+  FOR SELECT TO authenticated USING (true);
 
--- ─── PART 3: STORAGE POLICY ─────────────────────────────────────────────────
+
+-- ─── PART 3: STORAGE POLICY ─────────────────────────────────────────────────────────────────────
 --
 -- Allows authenticated users to:
 --   • Download objects (server-side pixel-distance computation in /api/match)
@@ -77,7 +96,7 @@ CREATE POLICY "thumbnails_authenticated_read" ON storage.objects
   USING (bucket_id = 'thumbnails');
 
 
--- ─── PART 4: RPC FUNCTIONS ──────────────────────────────────────────────────
+-- ─── PART 4: RPC FUNCTIONS ─────────────────────────────────────────────────────────────────
 --
 -- The Supabase JS query builder (.from().select()) does not support custom
 -- PostgreSQL operators such as the pgvector Hamming-distance operator <~>.
@@ -124,6 +143,11 @@ CREATE POLICY "thumbnails_authenticated_read" ON storage.objects
 -- SQL reserved word. The TypeScript route maps `ts` → `timestamp` in the
 -- response object.
 --
+-- Normalized columns: url / size / location / origin / camera_name /
+-- location_name are no longer stored as text on the tables — they are rebuilt
+-- here from photo_id, width+height, lat+lon and the lookup tables (see the
+-- header of this file). filesize_bytes is the only file-size field.
+--
 -- Technical-metadata columns (filesize_bytes, jpeg_quality, bit_depth,
 -- pixel_format, color_primaries, color_space, color_transfer, color_range)
 -- were added to `hashes`/`partner` by migration_technical_metadata.sql —
@@ -140,7 +164,7 @@ CREATE POLICY "thumbnails_authenticated_read" ON storage.objects
 -- first — both the old signature and the new one (so re-running this file
 -- is safe even if the return columns ever change again).
 
--- 4a. Image matching — hashes table ─────────────────────────────────────────
+-- 4a. Image matching — hashes table ─────────────────────────────────────────────
 
 DROP FUNCTION IF EXISTS public.match_hashes_image(text, integer);
 DROP FUNCTION IF EXISTS public.match_hashes_image(text, integer, text);
@@ -159,7 +183,6 @@ RETURNS TABLE (
   ts               timestamptz,
   url              text,
   size             text,
-  filesize         text,
   filesize_bytes   bigint,
   origin           text,
   duration         integer,
@@ -196,15 +219,14 @@ BEGIN
       SELECT
         a.id::integer AS id,
         a.filename::text AS filename,
-        a.camera_name::text AS camera_name,
-        a.location::text AS location,
-        a.location_name::text AS location_name,
+        (SELECT cn.value FROM public.camera_names cn WHERE cn.id = a.camera_name_id)::text AS camera_name,
+        public.gphoto_location_url(a.lat, a.lon)::text AS location,
+        (SELECT ln.value FROM public.location_names ln WHERE ln.id = a.location_name_id)::text AS location_name,
         a.timestamp::timestamptz AS ts,
-        a.url::text AS url,
-        a.size::text AS size,
-        a.filesize::text AS filesize,
+        public.gphoto_photo_url(a.photo_id)::text AS url,
+        (a.width || ' × ' || a.height)::text AS size,
         a.filesize_bytes::bigint AS filesize_bytes,
-        a.origin::text AS origin,
+        (SELECT o.value FROM public.origins o WHERE o.id = a.origin_id)::text AS origin,
         a.duration::integer AS duration,
         a.jpeg_quality::smallint AS jpeg_quality,
         a.bit_depth::smallint AS bit_depth,
@@ -237,15 +259,14 @@ BEGIN
   SELECT
     a.id::integer AS id,
     a.filename::text AS filename,
-    a.camera_name::text AS camera_name,
-    a.location::text AS location,
-    a.location_name::text AS location_name,
+    (SELECT cn.value FROM public.camera_names cn WHERE cn.id = a.camera_name_id)::text AS camera_name,
+    public.gphoto_location_url(a.lat, a.lon)::text AS location,
+    (SELECT ln.value FROM public.location_names ln WHERE ln.id = a.location_name_id)::text AS location_name,
     a.timestamp::timestamptz AS ts,
-    a.url::text AS url,
-    a.size::text AS size,
-    a.filesize::text AS filesize,
+    public.gphoto_photo_url(a.photo_id)::text AS url,
+    (a.width || ' × ' || a.height)::text AS size,
     a.filesize_bytes::bigint AS filesize_bytes,
-    a.origin::text AS origin,
+    (SELECT o.value FROM public.origins o WHERE o.id = a.origin_id)::text AS origin,
     a.duration::integer AS duration,
     a.jpeg_quality::smallint AS jpeg_quality,
     a.bit_depth::smallint AS bit_depth,
@@ -264,7 +285,7 @@ END;
 $$;
 
 
--- 4b. Video matching — hashes table ─────────────────────────────────────────
+-- 4b. Video matching — hashes table ─────────────────────────────────────────────
 --
 -- Video hashes come from two different pipelines that must not be crossed:
 --   • hash_bit             — whole-video hash from the `videohash2` package.
@@ -313,7 +334,6 @@ RETURNS TABLE (
   ts               timestamptz,
   url              text,
   size             text,
-  filesize         text,
   filesize_bytes   bigint,
   origin           text,
   duration         integer,
@@ -354,15 +374,14 @@ BEGIN
       SELECT
         h.id::integer AS id,
         h.filename::text AS filename,
-        h.camera_name::text AS camera_name,
-        h.location::text AS location,
-        h.location_name::text AS location_name,
+        (SELECT cn.value FROM public.camera_names cn WHERE cn.id = h.camera_name_id)::text AS camera_name,
+        public.gphoto_location_url(h.lat, h.lon)::text AS location,
+        (SELECT ln.value FROM public.location_names ln WHERE ln.id = h.location_name_id)::text AS location_name,
         h.timestamp::timestamptz AS ts,
-        h.url::text AS url,
-        h.size::text AS size,
-        h.filesize::text AS filesize,
+        public.gphoto_photo_url(h.photo_id)::text AS url,
+        (h.width || ' × ' || h.height)::text AS size,
         h.filesize_bytes::bigint AS filesize_bytes,
-        h.origin::text AS origin,
+        (SELECT o.value FROM public.origins o WHERE o.id = h.origin_id)::text AS origin,
         h.duration::integer AS duration,
         h.jpeg_quality::smallint AS jpeg_quality,
         h.bit_depth::smallint AS bit_depth,
@@ -419,15 +438,14 @@ BEGIN
   SELECT
     h.id::integer AS id,
     h.filename::text AS filename,
-    h.camera_name::text AS camera_name,
-    h.location::text AS location,
-    h.location_name::text AS location_name,
+    (SELECT cn.value FROM public.camera_names cn WHERE cn.id = h.camera_name_id)::text AS camera_name,
+    public.gphoto_location_url(h.lat, h.lon)::text AS location,
+    (SELECT ln.value FROM public.location_names ln WHERE ln.id = h.location_name_id)::text AS location_name,
     h.timestamp::timestamptz AS ts,
-    h.url::text AS url,
-    h.size::text AS size,
-    h.filesize::text AS filesize,
+    public.gphoto_photo_url(h.photo_id)::text AS url,
+    (h.width || ' × ' || h.height)::text AS size,
     h.filesize_bytes::bigint AS filesize_bytes,
-    h.origin::text AS origin,
+    (SELECT o.value FROM public.origins o WHERE o.id = h.origin_id)::text AS origin,
     h.duration::integer AS duration,
     h.jpeg_quality::smallint AS jpeg_quality,
     h.bit_depth::smallint AS bit_depth,
@@ -456,7 +474,7 @@ END;
 $$;
 
 
--- 4c. Image matching — partner table ─────────────────────────────────────────
+-- 4c. Image matching — partner table ─────────────────────────────────────────────
 
 DROP FUNCTION IF EXISTS public.match_partner_image(text, integer);
 DROP FUNCTION IF EXISTS public.match_partner_image(text, integer, text);
@@ -472,7 +490,6 @@ RETURNS TABLE (
   ts               timestamptz,
   url              text,
   size             text,
-  filesize         text,
   filesize_bytes   bigint,
   duration         integer,
   jpeg_quality     smallint,
@@ -509,9 +526,8 @@ BEGIN
         a.id::integer AS id,
         a.filename::text AS filename,
         a.timestamp::timestamptz AS ts,
-        a.url::text AS url,
-        a.size::text AS size,
-        a.filesize::text AS filesize,
+        public.gphoto_partner_photo_url(a.photo_id)::text AS url,
+        (a.width || ' × ' || a.height)::text AS size,
         a.filesize_bytes::bigint AS filesize_bytes,
         a.duration::integer AS duration,
         a.jpeg_quality::smallint AS jpeg_quality,
@@ -546,9 +562,8 @@ BEGIN
     a.id::integer AS id,
     a.filename::text AS filename,
     a.timestamp::timestamptz AS ts,
-    a.url::text AS url,
-    a.size::text AS size,
-    a.filesize::text AS filesize,
+    public.gphoto_partner_photo_url(a.photo_id)::text AS url,
+    (a.width || ' × ' || a.height)::text AS size,
     a.filesize_bytes::bigint AS filesize_bytes,
     a.duration::integer AS duration,
     a.jpeg_quality::smallint AS jpeg_quality,
@@ -568,7 +583,7 @@ END;
 $$;
 
 
--- 4d. Video matching — partner table ─────────────────────────────────────────
+-- 4d. Video matching — partner table ─────────────────────────────────────────────
 -- Same rules as match_hashes_video: candidates are found via thumb_hamming
 -- only; hamming is still computed and returned for display.
 
@@ -587,7 +602,6 @@ RETURNS TABLE (
   ts               timestamptz,
   url              text,
   size             text,
-  filesize         text,
   filesize_bytes   bigint,
   duration         integer,
   jpeg_quality     smallint,
@@ -626,9 +640,8 @@ BEGIN
         p.id::integer AS id,
         p.filename::text AS filename,
         p.timestamp::timestamptz AS ts,
-        p.url::text AS url,
-        p.size::text AS size,
-        p.filesize::text AS filesize,
+        public.gphoto_partner_photo_url(p.photo_id)::text AS url,
+        (p.width || ' × ' || p.height)::text AS size,
         p.filesize_bytes::bigint AS filesize_bytes,
         p.duration::integer AS duration,
         p.jpeg_quality::smallint AS jpeg_quality,
@@ -687,9 +700,8 @@ BEGIN
     p.id::integer AS id,
     p.filename::text AS filename,
     p.timestamp::timestamptz AS ts,
-    p.url::text AS url,
-    p.size::text AS size,
-    p.filesize::text AS filesize,
+    public.gphoto_partner_photo_url(p.photo_id)::text AS url,
+    (p.width || ' × ' || p.height)::text AS size,
     p.filesize_bytes::bigint AS filesize_bytes,
     p.duration::integer AS duration,
     p.jpeg_quality::smallint AS jpeg_quality,
@@ -719,7 +731,7 @@ END;
 $$;
 
 
--- ─── PART 5: GRANT EXECUTE ───────────────────────────────────────────────────
+-- ─── PART 5: GRANT EXECUTE ─────────────────────────────────────────────────────────────────
 --
 -- PostgREST calls RPC functions under the authenticated role. Without an
 -- explicit GRANT the call will fail with "permission denied for function …".
