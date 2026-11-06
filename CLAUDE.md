@@ -91,6 +91,10 @@ supabase/migrations/20261031120100_rebuild_hnsw_indexes.sql
                                  ef_construction=200. Pure SQL, idempotent, skips
                                  tables that don't exist and indexes already done.
                                  SLOW on prod — run via psql first (see header).
+supabase/migrations/20261106120000_rebuild_big_hnsw_indexes.sql
+                               ← Same idempotent function as ...120100, as a new migration:
+                                 rebuilds the two big HNSW indexes dropped for the
+                                 normalized-columns work (the other two are skipped).
 supabase/migrations/20261103120000_normalize_columns_expand.sql
                                ← DDL for the normalized columns (lookup tables, new
                                  columns, URL builders) — see "Normalized columns".
@@ -515,12 +519,14 @@ exists in the RPC output, types or UI.
 | `filesize` (text) | merged into `filesize_bytes` | — |
 
 Things to remember:
-- **Current state (Nov 2026).** Runbook steps 0–3 are done on the live DB (the
-  old columns still exist; contract/`VACUUM FULL` are pending until the TV
-  app, LAN server and scrapers are updated). The two big HNSW indexes
-  (`hashes_hash_bit_hnsw_idx`, `partner_hash_bit_hnsw_idx`) are currently
-  DROPPED, so `fast`/`wide` behave like `exact` until runbook step 6 rebuilds
-  them. Check `pg_indexes` before assuming they exist.
+- **Current state (2026-11-06).** Runbook steps 0–5 are done on the live DB: the
+  old columns are dropped (contract) and both tables were `VACUUM FULL`ed
+  (database 398 → 288 MB). The two big HNSW indexes
+  (`hashes_hash_bit_hnsw_idx`, `partner_hash_bit_hnsw_idx`) stay DROPPED until
+  migration `20261106120000_rebuild_big_hnsw_indexes.sql` (step 6) has run, so
+  `fast`/`wide` behave like `exact` until then. Rebuilding adds back about
+  109 MB. Check `pg_indexes` before assuming they exist. The webos TV app must
+  be redeployed from the commit that reads the normalized columns.
 - **`filesize_bytes` is mixed precision.** Rows scraped after the technical-
   metadata migration have the exact on-disk size; older rows were back-filled
   by parsing Google Photos' display text with decimal units (KB = 1000), i.e.

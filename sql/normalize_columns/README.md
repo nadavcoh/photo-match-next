@@ -18,7 +18,7 @@ Use a **direct** connection (not the pooler) for the psql steps.
 | — | Deploy: webos-local-slideshow (TV app + LAN server), phash scrapers. Confirm the match UI and the TV both look right. | see those repos | — |
 | 4 | Contract: drop the old columns, add NOT NULL/CHECK on `photo_id` | re-run `1_backfill.sql`, then `psql -v ON_ERROR_STOP=1 -1 -f sql/normalize_columns/2_contract.sql` | **no** |
 | 5 | Return the space: `VACUUM FULL` both tables (exclusive lock; app idle) | `psql -f sql/normalize_columns/3_vacuum_full.sql` (plain psql, not `-1`) | — |
-| 6 | Rebuild the HNSW indexes (skip if you skipped step 0) | `psql -f supabase/migrations/20261031120100_rebuild_hnsw_indexes.sql` — builds any missing one with m=32, ef_construction=200 | — |
+| 6 | Rebuild the HNSW indexes (skip if you skipped step 0) | merge migration `20261106120000_rebuild_big_hnsw_indexes.sql` (or `psql -f` it first; the older `20261031120100` file is already in the migration history) — builds any missing one with m=32, ef_construction=200 | — |
 | 7 | Re-run Part 1 of `sql/hnsw_recall_tests.sql` (indexes were rebuilt) | SQL editor / psql | — |
 
 Between steps 1 and 4 an **old** scraper still works for inserts, but the rows it
