@@ -519,14 +519,20 @@ exists in the RPC output, types or UI.
 | `filesize` (text) | merged into `filesize_bytes` | — |
 
 Things to remember:
-- **Current state (2026-11-06).** Runbook steps 0–5 are done on the live DB: the
-  old columns are dropped (contract) and both tables were `VACUUM FULL`ed
-  (database 398 → 288 MB). The two big HNSW indexes
-  (`hashes_hash_bit_hnsw_idx`, `partner_hash_bit_hnsw_idx`) stay DROPPED until
-  migration `20261106120000_rebuild_big_hnsw_indexes.sql` (step 6) has run, so
-  `fast`/`wide` behave like `exact` until then. Rebuilding adds back about
-  109 MB. Check `pg_indexes` before assuming they exist. The webos TV app must
-  be redeployed from the commit that reads the normalized columns.
+- **Current state (2026-11-06).** The column normalization is finished on the
+  live DB (runbook steps 0–6): the old columns are dropped (contract), both
+  tables were `VACUUM FULL`ed, and the two big HNSW indexes were rebuilt by
+  migration `20261106120000_rebuild_big_hnsw_indexes.sql` (m = 32,
+  ef_construction = 200). Database size: ~420 MB before, 288 MB with the big
+  indexes dropped, ~397 MB with them back — the net saving of this work is
+  small. The big remaining item is moving thumbnails out of Supabase Storage
+  (`storage.objects`, roughly 215–275 MB); not started. After the rebuild,
+  Part 1 of `sql/hnsw_recall_tests.sql` showed zero misses for `fast` and
+  `wide` against `exact` in all four tests (200 samples each); Parts 2–3 were
+  not re-run. The deployed match route served requests without errors after the
+  contract. The webos TV app must be redeployed from the commit that reads the
+  normalized columns: its GitHub Action failed on 2026-11-06 because the TV was
+  unreachable, and until it runs the old build can't read locations.
 - **`filesize_bytes` is mixed precision.** Rows scraped after the technical-
   metadata migration have the exact on-disk size; older rows were back-filled
   by parsing Google Photos' display text with decimal units (KB = 1000), i.e.

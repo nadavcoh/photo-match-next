@@ -82,6 +82,9 @@ set the Supabase directory to `supabase` and the production branch to
 | `20261031120000_search_modes_for_match_functions.sql` | Replaces the four `match_*` functions with the `p_mode` versions. Quick; safe anywhere, including an empty database. |
 | `20261031120100_rebuild_hnsw_indexes.sql` | Rebuilds the four HNSW indexes with `m = 32, ef_construction = 200`. **Slow and write-blocking on a populated database.** |
 | `20261031120200_fix_match_function_return_types.sql` | Fixes the first migration's functions, which failed on every call (a column-type mismatch, e.g. `duration` is `double precision`). Supersedes their definitions. Quick. |
+| `20261103120000_normalize_columns_expand.sql` | Adds the normalized columns (`photo_id`, `lat`/`lon`, `width`/`height`, `*_id`, `quant_profile_id`) and the lookup tables with their RLS policies. Additive; the old columns keep working. See [Normalized columns](#normalized-columns). |
+| `20261103120100_match_functions_read_normalized_columns.sql` | Rewrites the four `match_*` functions to read the normalized columns (and drops the legacy `filesize` output). |
+| `20261106120000_rebuild_big_hnsw_indexes.sql` | Same idempotent function as `...120100`: rebuilds the two big HNSW indexes (`hashes`, `partner`) that were dropped during the normalization, skipping the ones already on `m = 32`. **Slow and write-blocking.** |
 
 **Before the integration first applies these to production**, run the second
 one by hand so it has nothing left to build (the integration then just
@@ -96,8 +99,10 @@ Pushing to the production branch is what triggers the integration to apply
 pending migrations, so do this first. Things to know:
 
 - The app tables (`wa`, `hashes`, `partner`) are not created by any migration,
-  so a **preview branch** starts without them. Both migrations succeed there
-  (the index one skips missing tables) but the branch can't run the app.
+  so a **preview branch** starts without them. The October migrations succeed
+  there (the index ones skip missing tables) but the branch can't run the app,
+  and the normalized-columns migrations (which alter `hashes`/`partner`) need
+  the tables to exist.
   `supabase db pull` would capture a baseline migration if you want branches
   to be usable.
 - `supabase/config.toml` says `major_version = 17`; it should match your
@@ -105,6 +110,26 @@ pending migrations, so do this first. Things to know:
   for local development and branches.
 - The app works with the migrations applied before or after it deploys: it
   only sends `p_mode` when you press the escalate button.
+
+## Normalized columns
+
+To keep the database small, `hashes` and `partner` store compact columns
+instead of the text Google Photos shows: `photo_id` (the URL is rebuilt with
+`gphoto_photo_url()`), `lat`/`lon`, `width`/`height`, small dictionary ids for
+origin / camera / location name (`origins`, `camera_names`, `location_names`),
+`quant_profile_id` (one row per distinct JPEG quantization-table set in
+`jpeg_quant_profiles`), and a single `filesize_bytes`. The `match_*` functions
+rebuild the display values, so the API response shape is unchanged apart from
+the removed `filesize` text field.
+
+As of 2026-11-06 the migration is finished on the live database: the old
+columns are dropped and both tables were `VACUUM FULL`ed. The runbook that did
+it is in [`sql/normalize_columns/`](./sql/normalize_columns/README.md); the
+column map and gotchas are in [`CLAUDE.md`](./CLAUDE.md) ("Normalized
+columns"). Anything that inserts rows (the private `phash` scrapers) must write
+`photo_id` and the `*_id` columns. The `webos-local-slideshow` TV app reads
+`lat`/`lon` and `location_names(value)` directly, so its RLS needs a SELECT
+policy on `location_names`.
 
 ## Search modes and the "Search wider" button
 
