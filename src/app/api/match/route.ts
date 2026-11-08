@@ -7,14 +7,16 @@
  *  - Removed: pg Pool (db.ts), downloadThumbnailBytes (supabase.ts service role key)
  *  - DB queries: Supabase client via .from() for simple selects,
  *    .rpc() for the pgvector <~> similarity queries (see SQL script).
- *  - Storage downloads: supabase.storage.from('thumbnails').download()
- *    using the authenticated user's JWT — no service role key needed.
+ *  - Thumbnails live in IDrive e2 (src/lib/e2.ts): bytes for the pixel
+ *    distance are downloaded server-side by key, and every thumbnail_url in
+ *    the response is replaced by a short-lived presigned e2 URL.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase-server'
-import { thumbnailStoragePath, thumbnailUrl, THUMBNAILS_BUCKET, ThumbnailPrefix } from '@/lib/thumbnails'
+import { thumbnailUrl } from '@/lib/thumbnails'
+import { downloadThumbnailBytes, presignThumbnailUrl } from '@/lib/e2'
 import { pixelDistance, pixelDistanceFallback } from '@/lib/pixelDistance'
 import type { WAItem, HashCandidate, PartnerCandidate, MatchResponse, SearchMode } from '@/lib/types'
 
@@ -58,29 +60,6 @@ function isVideoFiletype(filetype: string): boolean {
 
 function isoOrNull(d: string | null | undefined): string | null {
   return d ?? null
-}
-
-// ── Storage download ───────────────────────────────────────────────────────────
-
-/**
- * Download raw JPEG bytes for one thumbnail from the private bucket using the
- * authenticated user's session — no service role key required.
- * The RLS policy on storage.objects allows authenticated reads.
- */
-async function downloadThumbnailBytes(
-  supabase: SupabaseClient,
-  prefix: ThumbnailPrefix,
-  id: number,
-): Promise<Buffer | null> {
-  try {
-    const { data, error } = await supabase.storage
-      .from(THUMBNAILS_BUCKET)
-      .download(thumbnailStoragePath(prefix, id))
-    if (error || !data) return null
-    return Buffer.from(await data.arrayBuffer())
-  } catch {
-    return null
-  }
 }
 
 // ── RPC row types ──────────────────────────────────────────────────────────────
@@ -414,9 +393,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // Layout: [wa, ...hashes, ...partner]
     const nHashes = candidates.length
     const allThumbs = await Promise.all([
-      downloadThumbnailBytes(supabase, 'wa',      waItem.id),
-      ...candidates.map((c)       => downloadThumbnailBytes(supabase, 'hashes',  c.id)),
-      ...partnerCandidates.map((c) => downloadThumbnailBytes(supabase, 'partner', c.id)),
+      downloadThumbnailBytes(waItem.thumbnail_url),
+      ...candidates.map((c) => downloadThumbnailBytes(c.thumbnail_url)),
+      ...partnerCandidates.map((c) => downloadThumbnailBytes(c.thumbnail_url)),
     ])
     const waThumbnail  = allThumbs[0]
     const hashesThumbs = allThumbs.slice(1, 1 + nHashes)
@@ -443,13 +422,21 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       computeAutoSelect(candidatesWithPx, waItem, isVideo) ??
       pixelDistanceFallback(candidatesWithPx)
 
+    // ── Swap thumbnail keys for presigned e2 URLs (local HMAC, no I/O) ──────
+    const signUrl = async (key: string): Promise<string> => (await presignThumbnailUrl(key)) ?? ''
+    const [signedItem, signedCandidates, signedPartner] = await Promise.all([
+      signUrl(waItem.thumbnail_url).then((u) => ({ ...waItem, thumbnail_url: u })),
+      Promise.all(candidatesWithPx.map(async (c) => ({ ...c, thumbnail_url: await signUrl(c.thumbnail_url) }))),
+      Promise.all(partnerCandidatesWithPx.map(async (c) => ({ ...c, thumbnail_url: await signUrl(c.thumbnail_url) }))),
+    ])
+
     return NextResponse.json(
       {
         count: total,
         offset,
-        item: waItem,
-        candidates: candidatesWithPx,
-        partner_candidates: partnerCandidatesWithPx,
+        item: signedItem,
+        candidates: signedCandidates,
+        partner_candidates: signedPartner,
         auto_select_id,
         search_mode: mode,
       } as MatchResponse,

@@ -17,7 +17,6 @@ import type {
 } from '@/lib/types'
 import { WAMediaPreview } from '@/components/WAMediaPreview'
 import { createClient } from '@/lib/supabase-client'
-import { THUMBNAILS_BUCKET } from '@/lib/thumbnails'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -291,45 +290,22 @@ function SmallBadge({ children, style, variant }: BadgeProps): JSX.Element {
 
 // ── SignedImage ────────────────────────────────────────────────────────────────
 //
-// The thumbnails bucket is private. This component generates a short-lived
-// signed URL directly via the authenticated Supabase browser client — no
-// server-side proxy or service role key required.
-// The storage RLS policy allows any authenticated user to read objects from
-// the thumbnails bucket.
+// `src` is a short-lived presigned IDrive e2 URL minted by /api/match (see
+// src/lib/e2.ts). It is empty when e2 isn't configured on the server, and it
+// can expire if a page sits open for over an hour — both just show the
+// placeholder (↻ reloads the item with fresh URLs).
 
-function SignedImage({ storagePath, style }: { storagePath: string; style?: CSSProperties }): JSX.Element {
-  const [src, setSrc]       = useState<string | null>(null)
-  const [failed, setFailed] = useState(false)
+function SignedImage({ src, style }: { src: string; style?: CSSProperties }): JSX.Element {
+  const [failed, setFailed] = useState(!src)
 
-  useEffect(() => {
-    let cancelled = false
-    setSrc(null)
-    setFailed(false)
+  useEffect(() => { setFailed(!src) }, [src])
 
-    const supabase = createClient()
-    supabase.storage
-      .from(THUMBNAILS_BUCKET)
-      .createSignedUrl(storagePath, 120) // 2-minute TTL
-      .then(({ data, error }) => {
-        if (cancelled) return
-        if (error || !data?.signedUrl) setFailed(true)
-        else setSrc(data.signedUrl)
-      })
-      .catch(() => { if (!cancelled) setFailed(true) })
-
-    return () => { cancelled = true }
-  }, [storagePath])
-
-  if (failed) {
+  if (failed || !src) {
     return (
       <div style={{ ...style, background: 'var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: 'var(--muted)' }}>
         🖼️
       </div>
     )
-  }
-
-  if (!src) {
-    return <div style={{ ...style, background: 'var(--border)' }} />
   }
 
   return (
@@ -404,7 +380,7 @@ function CandidateCard({ c, isSelected, isAuto, isPartnerOnly, isVideo, waDurati
         }}>✓</div>
       )}
       <SignedImage
-        storagePath={c.thumbnail_url}
+        src={c.thumbnail_url}
         style={{ width: '100%', aspectRatio: '1', objectFit: 'contain', background: 'var(--border)', display: 'block' }}
       />
       <div style={{ padding: 8 }}>
@@ -648,7 +624,7 @@ function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoi
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden', marginBottom: 16 }}>
       <div style={{ display: 'flex', gap: 12, padding: 12 }}>
         <SignedImage
-          storagePath={item.thumbnail_url}
+          src={item.thumbnail_url}
           style={{ width: 128, height: 128, objectFit: 'contain', borderRadius: 10, flexShrink: 0, background: 'var(--border)' }}
         />
         <div style={{ flex: 1, minWidth: 0 }}>

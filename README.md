@@ -12,8 +12,9 @@ locked to one hardcoded email address.
 
 - **Next.js 15** (App Router, TypeScript, React 19)
 - **Supabase** — Postgres (with `pgvector` + HNSW indexes for Hamming-distance
-  queries), Storage (thumbnails), Auth (GitHub OAuth)
+  queries), Auth (GitHub OAuth)
 - **Backblaze B2** (S3-compatible API) — full-size original media previews
+- **IDrive e2** (S3-compatible API) — small JPEG thumbnails
 - **sharp** — server-side pixel-distance scoring
 - Deployed on **Vercel**
 
@@ -43,6 +44,13 @@ B2_BUCKET_NAME=
 B2_ENDPOINT=            # e.g. https://s3.us-west-004.backblazeb2.com
 B2_REGION=              # e.g. us-west-004
 B2_MEDIA_PREFIX=        # optional — only if media isn't stored at bucket root
+
+# IDrive e2 (S3-compatible API) — thumbnails; a read-only key is enough here
+E2_ACCESS_KEY_ID=
+E2_SECRET_ACCESS_KEY=
+E2_ENDPOINT=            # the account's e2 S3 endpoint, from the e2 console
+E2_REGION=              # the bucket's region name
+E2_BUCKET=thumbnails    # optional, defaults to "thumbnails"
 
 # Matching sensitivity (optional, default 10)
 HAMMING_THRESHOLD=10

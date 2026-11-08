@@ -20,9 +20,9 @@ export interface WAItem {
   timestamp: string | null
   duration: number | null
   /**
-   * Supabase Storage object path (e.g. "wa/008000/wa_8402.jpg").
-   * Pass to <SignedImage storagePath={...}> or to
-   * supabase.storage.from(THUMBNAILS_BUCKET).createSignedUrl(path, ttl).
+   * Short-lived presigned IDrive e2 URL for the thumbnail (object key e.g.
+   * "wa/008000/wa_8402.jpg"), minted by /api/match. Pass to
+   * <SignedImage src={...}>. Empty string if e2 isn't configured.
    */
   thumbnail_url: string
 }
@@ -78,7 +78,7 @@ export interface HashCandidate extends TechnicalMetadata {
    * side). Null for image-vs-image matching. */
   thumb_hamming: number | null
   pixel_dist: number | null
-  /** Supabase Storage object path — see WAItem.thumbnail_url. */
+  /** Presigned e2 thumbnail URL — see WAItem.thumbnail_url. */
   thumbnail_url: string
   source: 'hashes'
 }
@@ -93,7 +93,7 @@ export interface PartnerCandidate extends TechnicalMetadata {
   hamming: number | null
   thumb_hamming: number | null
   pixel_dist: number | null
-  /** Supabase Storage object path — see WAItem.thumbnail_url. */
+  /** Presigned e2 thumbnail URL — see WAItem.thumbnail_url. */
   thumbnail_url: string
   source: 'partner'
 }
