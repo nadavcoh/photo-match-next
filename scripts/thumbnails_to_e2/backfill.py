@@ -78,14 +78,14 @@ def main():
     wanted, orphans = classify(objects, list_row_ids(conn))
     conn.close()
     print(f"  {len(objects)} objects in Supabase bucket '{SB_BUCKET}': "
-          f"{len(wanted)} wanted, {len(orphans)} orphans")
+          f"{len(wanted)} wanted (have a DB row), {len(orphans)} orphans (no DB row)")
     for name, _size, why in orphans[:10]:
         print(f"    orphan: {name} ({why})")
 
     print("Listing e2 bucket ...")
     e2 = list_e2(s3, s["E2_BUCKET"])
     todo = [(n, sz) for n, sz in wanted if n not in e2 or (sz >= 0 and e2[n] != sz)]
-    print(f"  {len(e2)} objects already in e2; {len(todo)} to copy")
+    print(f"  {len(e2)} objects already in e2; {len(todo)} wanted objects still to copy")
 
     if args.limit:
         todo = todo[: args.limit]

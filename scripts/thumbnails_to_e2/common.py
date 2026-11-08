@@ -187,12 +187,24 @@ def with_retries(fn, attempts=4):
 
 
 def report_verification(wanted, orphans, e2):
+    """Print the verification summary, with what each number means.
+
+    Returns True when every wanted object is in e2 with the right size.
+    """
     missing, mismatched = compare(wanted, e2)
-    print(f"  wanted objects : {len(wanted)}")
-    print(f"  orphans        : {len(orphans)} (not copied)")
-    print(f"  in e2          : {len(e2)} objects")
-    print(f"  missing in e2  : {len(missing)}")
-    print(f"  size mismatch  : {len(mismatched)}")
+    present = len(wanted) - len(missing)       # wanted objects found in e2
+    extra = len(e2) - present                  # in e2, but not in Supabase's list
+    print(f"  wanted objects : {len(wanted)}   (in Supabase Storage and with a DB row; all must end up in e2)")
+    print(f"  orphans        : {len(orphans)}   (in Supabase Storage but no DB row; never copied to e2,")
+    print(f"                       use --orphans-dir to download them)")
+    print(f"  in e2          : {len(e2)}   (= {present} wanted + {extra} extra)")
+    print(f"  extra in e2    : {extra}   (thumbnails the scrapers wrote straight to e2 after the migration;")
+    print(f"                       not in Supabase, so expected to be more than 0 over time)")
+    print(f"  missing in e2  : {len(missing)}   (wanted objects not in e2 yet; must be 0)")
+    print(f"  size mismatch  : {len(mismatched)}   (in e2 but with a different size than in Supabase; must be 0)")
     for n in (missing + mismatched)[:10]:
         print("    e.g.", n)
-    return not missing and not mismatched
+    ok = not missing and not mismatched
+    print("  => OK: every wanted object is in e2 with the right size." if ok else
+          "  => NOT COMPLETE: re-run backfill.py to copy/repair the objects above.")
+    return ok
