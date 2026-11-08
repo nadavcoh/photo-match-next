@@ -1,22 +1,22 @@
 /**
  * src/lib/thumbnails.ts
  *
- * Shared helpers for computing Supabase Storage object paths for thumbnails.
+ * Deterministic object keys for the small JPEG thumbnails.
  *
- * With the service-role-key proxy removed, thumbnail_url values are now raw
- * storage paths (e.g. "wa/008000/wa_8402.jpg") rather than API route paths.
- * The browser SignedImage component calls supabase.storage.createSignedUrl()
- * directly with these paths, and the server-side match route downloads bytes
- * via the authenticated SSR client.
+ * The thumbnails live in an IDrive e2 bucket (see e2.ts), no longer in
+ * Supabase Storage. The key layout is unchanged, and the phash scrapers
+ * (thumb_store.py) build the very same keys.
+ *
+ * `thumbnail_url` on WAItem / candidates starts out as one of these keys
+ * inside /api/match; the route downloads bytes by key for the pixel
+ * distance and then replaces it with a presigned e2 URL before responding,
+ * so the browser only ever sees a URL it can put in <img src>.
  */
 
 export type ThumbnailPrefix = 'wa' | 'hashes' | 'partner'
 
-/** The Supabase Storage bucket that holds all thumbnails. */
-export const THUMBNAILS_BUCKET = 'thumbnails'
-
 /**
- * Deterministic Supabase Storage object path for one thumbnail.
+ * Deterministic object key for one thumbnail.
  *
  * Convention:  {prefix}/{chunkDir}/{prefix}_{id}.jpg
  * Chunk dir:   floor(id / 1000) * 1000, zero-padded to 6 digits
@@ -32,13 +32,7 @@ export function thumbnailStoragePath(prefix: ThumbnailPrefix, id: number): strin
   return `${prefix}/${chunkDir}/${prefix}_${id}.jpg`
 }
 
-/**
- * Returns the Supabase Storage object path for a thumbnail.
- *
- * Formerly returned an API route path (/api/thumbnail/…). Now returns the
- * raw storage path so callers can interact with Supabase Storage directly
- * using the authenticated client, without a server-side proxy.
- */
+/** Same as thumbnailStoragePath — the key used inside the API route. */
 export function thumbnailUrl(prefix: ThumbnailPrefix, id: number): string {
   return thumbnailStoragePath(prefix, id)
 }

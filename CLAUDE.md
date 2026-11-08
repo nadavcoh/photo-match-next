@@ -25,9 +25,11 @@ scope — don't "fix" it into a more conventional architecture unless asked.
 
 - **Next.js 15** (App Router, TypeScript, React 19) on **Vercel**
 - **Supabase**: Postgres (with `pgvector` for Hamming-distance bit-string
-  queries) + Storage (private bucket `thumbnails`) + Auth (GitHub OAuth)
+  queries) + Auth (GitHub OAuth)
 - **Backblaze B2** (S3-compatible API) for full-size original WhatsApp media
   previews — see "Cloudinary → B2 migration" below
+- **IDrive e2** (S3-compatible API) for the small JPEG thumbnails (bucket
+  `thumbnails`) — see "Thumbnails: IDrive e2" below
 - **sharp** for server-side pixel-distance scoring (auto-select fallback)
 - No ORM — raw `@supabase/supabase-js` `.from()` calls + 4 hand-written
   Postgres RPC functions for the pgvector queries (see
@@ -61,8 +63,10 @@ src/app/api/health/route.ts   ← GET: liveness check (polled every 30s client-s
 src/app/api/version/route.ts  ← GET: git SHA / Vercel commit SHA, for Settings panel
 
 src/lib/types.ts              ← All shared request/response shapes
-src/lib/thumbnails.ts         ← Deterministic Supabase Storage path builder for
-                                 small JPEG thumbnails (wa/hashes/partner buckets)
+src/lib/thumbnails.ts         ← Deterministic e2 object-key builder for small JPEG
+                                 thumbnails (wa/hashes/partner prefixes)
+src/lib/e2.ts                 ← IDrive e2 (S3-compatible): presigned thumbnail URLs
+                                 + server-side byte download for pixel distance
 src/lib/pixelDistance.ts      ← sharp-based MAE pixel distance + fallback auto-select
 src/lib/b2.ts                 ← Backblaze B2 (S3-compatible) signed-URL helper for
                                  full-size original media (NOT thumbnails)
@@ -113,11 +117,12 @@ sql/hnsw_recall_tests.sql     ← Recall/latency/behaviour checks for the match_
 
 ### Two completely separate "media" concepts — don't conflate them
 
-1. **Thumbnails** (`src/lib/thumbnails.ts`) — small JPEGs in Supabase Storage
-   bucket `thumbnails`, path convention `{prefix}/{chunkDir}/{prefix}_{id}.jpg`.
-   Used for the candidate grid + pixel-distance scoring. Browser fetches these
-   directly via `supabase.storage.createSignedUrl()` in the `SignedImage`
-   component (`page.tsx`) — no API route involved.
+1. **Thumbnails** (`src/lib/thumbnails.ts` + `src/lib/e2.ts`) — small JPEGs in
+   the IDrive e2 bucket `thumbnails`, key convention
+   `{prefix}/{chunkDir}/{prefix}_{id}.jpg`. Used for the candidate grid +
+   pixel-distance scoring. `/api/match` puts presigned e2 URLs in
+   `thumbnail_url` and the `SignedImage` component (`page.tsx`) renders them
+   with a plain `<img>`.
 2. **Full-size original media** (`src/lib/b2.ts` + `/api/media`) — the actual
    synced WhatsApp photo/video, shown in `WAMediaPreview` below the item card,
    only when `filename` starts with `"Media"`. This is what migrated from
@@ -194,16 +199,45 @@ how/whether it got uploaded to B2 in the first place. If there's a separate
 sync script (akin to whatever ran `cloudinary sync -O type authenticated`
 before), it needs to be repointed at B2.
 
+## Thumbnails: IDrive e2
+
+The small JPEG thumbnails (`wa` / `hashes` / `partner`, ~253k objects, ~0.9 GB)
+live in an IDrive e2 bucket named `thumbnails` (S3-compatible), not in
+Supabase Storage. They used to be Supabase Storage objects; the 253k
+`storage.objects` rows were the biggest table in the database (226 MB
+including indexes), which is why they moved. The key layout did not change:
+`{prefix}/{chunk:06d}/{prefix}_{id}.jpg`, chunk = `floor(id/1000)*1000`.
+
+- `src/lib/e2.ts` — S3 client for e2. `presignThumbnailUrl(key)` is a local
+  HMAC (no network call, no HeadObject); `downloadThumbnailBytes(key)` is a
+  server-side GetObject used for the pixel distance.
+- `/api/match` downloads thumbnails by key for the pixel distance, then
+  replaces every `thumbnail_url` in the response with a presigned URL (1 h).
+  The browser just renders `<img src>` (`SignedImage` in `page.tsx`); there is
+  no per-image Supabase round trip any more. An empty `thumbnail_url` means e2
+  isn't configured on the server and shows the placeholder.
+- Writers: the phash scrapers (`thumb_store.py` there) with a read/write key.
+  The app only needs a read-only key.
+
+**Env vars** (Vercel project `gphoto`):
+```
+E2_ACCESS_KEY_ID        # read-only e2 access key limited to the bucket
+E2_SECRET_ACCESS_KEY    # the matching secret
+E2_ENDPOINT             # the account's e2 S3 endpoint (https://…)
+E2_REGION               # the bucket's region name
+E2_BUCKET               # optional, default "thumbnails"
+E2_PATH_STYLE           # optional, default path-style; "false" = virtual-hosted
+```
+
+The one-time migration (backfill, cutover order, cleanup, `VACUUM FULL` of
+`storage.objects`) is in `scripts/thumbnails_to_e2/README.md`.
+
 ## Known dead/legacy bits worth knowing about
 
 - `WAMediaPreviewProps.path` — explicitly marked unused in a comment
   ("the full relative path is encoded in filename itself"). Still passed
   in some callers maybe; harmless to leave, fine to remove if touching that
   component anyway.
-- `next.config.ts` comment says thumbnails are "served via our own
-  `/api/thumbnail` proxy" — that's stale. Thumbnails are fetched directly
-  from Supabase Storage via signed URLs now (see `SignedImage` in
-  `page.tsx`); there is no `/api/thumbnail` route in this codebase.
 
 ## Duration/resolution/filesize badges: `wa` schema constrains what's possible
 
@@ -526,7 +560,10 @@ Things to remember:
   ef_construction = 200). Database size: ~420 MB before, 288 MB with the big
   indexes dropped, ~397 MB with them back — the net saving of this work is
   small. The big remaining item is moving thumbnails out of Supabase Storage
-  (`storage.objects`, roughly 215–275 MB); not started. After the rebuild,
+  (`storage.objects`: 253k rows, 226 MB including indexes, 898 MB of files).
+  The code for the move to IDrive e2 is written (2026-11-07) and the cutover
+  runbook is `scripts/thumbnails_to_e2/README.md`; update this note once the
+  cutover and cleanup have actually been done. After the rebuild,
   Part 1 of `sql/hnsw_recall_tests.sql` showed zero misses for `fast` and
   `wide` against `exact` in all four tests (200 samples each); Parts 2–3 were
   not re-run. The deployed match route served requests without errors after the

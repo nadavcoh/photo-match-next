@@ -2,7 +2,7 @@ import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   images: {
-    // Supabase Storage images served via our own /api/thumbnail proxy
+    // Thumbnails are presigned IDrive e2 URLs rendered with plain <img>
     unoptimized: true,
   },
 }
