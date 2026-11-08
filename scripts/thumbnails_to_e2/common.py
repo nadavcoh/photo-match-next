@@ -118,22 +118,38 @@ def classify(objects, row_ids):
 
     wanted  = key is well-formed and its DB row exists -> must end up in e2
     orphans = malformed key, or no matching row (e.g. thumbnails of rows that
-              were deleted) -> not copied; cleanup.py still deletes them
+              were deleted) -> (name, size, reason); not copied to e2. They can
+              be downloaded locally (backfill.py --orphans-dir) before
+              cleanup.py deletes them
     """
     wanted, orphans = [], []
     for name, size in objects:
         m = KEY_RE.match(name)
         if not m:
-            orphans.append((name, "unrecognized key"))
+            orphans.append((name, size, "unrecognized key"))
             continue
         prefix, chunk, ident = m.group(1), int(m.group(2)), int(m.group(3))
         if chunk != ident // 1000 * 1000:
-            orphans.append((name, "wrong chunk dir"))
+            orphans.append((name, size, "wrong chunk dir"))
         elif ident not in row_ids[prefix]:
-            orphans.append((name, "no matching row"))
+            orphans.append((name, size, "no matching row"))
         else:
             wanted.append((name, size))
     return wanted, orphans
+
+
+def orphan_local_path(directory, name):
+    return os.path.join(directory, *name.split("/"))
+
+
+def orphans_not_downloaded(orphans, directory):
+    """[(name, size)] of orphans missing (or with the wrong size) in a local folder."""
+    out = []
+    for name, size, _why in orphans:
+        p = orphan_local_path(directory, name)
+        if not os.path.isfile(p) or (size >= 0 and os.path.getsize(p) != size):
+            out.append((name, size))
+    return out
 
 
 def list_e2(s3, bucket):

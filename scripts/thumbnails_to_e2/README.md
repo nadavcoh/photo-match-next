@@ -30,7 +30,8 @@ separate **read-only** key.
 1. **Trial.** `python backfill.py --config config.json --dry-run`, then
    `--limit 200`. Dry run only reads. The orphans it lists
    (`hashes_214548`, `partner_34734`, …) are objects with no DB row; they are
-   not copied.
+   never copied to e2. Add `--orphans-dir <folder>` to a real run to download
+   them to your machine instead (keeps their key paths).
 2. **Backfill.** `python backfill.py --config config.json`. Supabase is only
    read. Safe to re-run and to interrupt: it lists e2 first and copies only
    what is missing or has a different size. Failures go to
@@ -46,10 +47,12 @@ separate **read-only** key.
    Rollback = redeploy the previous Vercel deployment and revert the scrapers.
    Any scraper run from the old code after cutover writes to Supabase only;
    re-run `backfill.py` to pick those up.
-5. **Cleanup (no way back).** `python cleanup.py --config config.json` prints
-   the plan and refuses to continue unless e2 is a complete copy; add `--yes`
-   to delete via the Storage API (also removes the orphans). Never delete with
-   SQL on `storage.objects`.
+5. **Cleanup (no way back).** `python cleanup.py --config config.json
+   --orphans-dir <folder>` prints the plan and refuses to continue unless e2 is
+   a complete copy and every orphan is already in that folder (or you pass
+   `--discard-orphans`); add `--yes` to delete via the Storage API (this also
+   removes the orphans from Supabase). Never delete with SQL on
+   `storage.objects`.
 6. **Reclaim the space.** Run `sql/thumbnails_to_e2/vacuum_full_storage_objects.sql`
    (three separate calls; a manual script, not a migration). The `postgres`
    role can do this because it holds MAINTAIN on `storage.objects`.
