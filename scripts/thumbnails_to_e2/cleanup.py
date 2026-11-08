@@ -5,10 +5,12 @@ been verified. Uses the Storage API (never SQL deletes on storage.objects),
 so Supabase also removes the underlying files.
 
 It refuses to delete anything unless every wanted object is present in e2
-with the right size. Orphans are deleted too (they have no row to belong to).
+with the right size. Orphans (objects with no DB row) are deleted too, so it
+also refuses unless they are already downloaded in --orphans-dir (made by
+backfill.py --orphans-dir), or you explicitly pass --discard-orphans.
 
-  python cleanup.py --config /path/to/config.json           # shows the plan only
-  python cleanup.py --config /path/to/config.json --yes     # really deletes
+  python cleanup.py --config /path/to/config.json --orphans-dir DIR          # plan only
+  python cleanup.py --config /path/to/config.json --orphans-dir DIR --yes    # really deletes
 
 Afterwards run sql/thumbnails_to_e2/vacuum_full_storage_objects.sql to give
 the disk space back to the database.
@@ -21,7 +23,8 @@ import requests
 
 from common import (
     SB_BUCKET, classify, connect_db, list_e2, list_row_ids,
-    list_supabase_objects, load_settings, report_verification, s3_client,
+    list_supabase_objects, load_settings, orphans_not_downloaded,
+    report_verification, s3_client,
     sb_headers, with_retries,
 )
 
@@ -42,6 +45,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config")
     ap.add_argument("--batch", type=int, default=500)
+    ap.add_argument("--orphans-dir", help="folder holding the orphans downloaded by backfill.py")
+    ap.add_argument("--discard-orphans", action="store_true",
+                    help="delete the orphans without keeping a local copy")
     ap.add_argument("--yes", action="store_true", help="actually delete (default: plan only)")
     args = ap.parse_args()
 
@@ -56,6 +62,20 @@ def main():
     e2 = list_e2(s3, s["E2_BUCKET"])
     if not report_verification(wanted, orphans, e2):
         raise SystemExit("ABORT: e2 is not a complete copy yet. Run backfill.py again.")
+
+    if orphans:
+        if args.discard_orphans:
+            print(f"NOTE: {len(orphans)} orphans will be deleted without a local copy.")
+        elif not args.orphans_dir:
+            raise SystemExit(
+                f"ABORT: {len(orphans)} orphans have no local copy. Run backfill.py with "
+                f"--orphans-dir <folder>, then pass the same folder here (or --discard-orphans).")
+        else:
+            missing = orphans_not_downloaded(orphans, args.orphans_dir)
+            if missing:
+                raise SystemExit(f"ABORT: {len(missing)} orphans are not in {args.orphans_dir} "
+                                 f"(e.g. {missing[0][0]}). Run backfill.py --orphans-dir again.")
+            print(f"All {len(orphans)} orphans are saved in {args.orphans_dir}.")
 
     names = [n for n, _ in objects]
     if not args.yes:

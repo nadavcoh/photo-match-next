@@ -10,11 +10,14 @@ switch is the "delta pass". Supabase Storage is only read, never modified.
   python backfill.py --config ... --limit 200          # small trial first
   python backfill.py --config ...                      # the real run
 
-Orphans (objects whose DB row no longer exists) are not copied.
+Orphans (objects whose DB row no longer exists) are not copied to e2. Add
+--orphans-dir <folder> to download them to your machine instead; cleanup.py
+will not delete anything until they are there.
 Exit code 0 only if verification at the end is clean.
 """
 
 import argparse
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,7 +26,8 @@ import requests
 
 from common import (
     SB_BUCKET, classify, connect_db, list_e2, list_row_ids,
-    list_supabase_objects, load_settings, report_verification, s3_client,
+    list_supabase_objects, load_settings, orphan_local_path, orphans_not_downloaded,
+    report_verification, s3_client,
     sb_headers, sb_object_url, with_retries,
 )
 
@@ -36,15 +40,19 @@ def session():
     return _local.s
 
 
-def copy_one(s, s3, name, size):
+def fetch(s, name, size):
+    """Download one object from Supabase Storage (size-checked)."""
     def download():
         r = session().get(sb_object_url(s, name), headers=sb_headers(s), timeout=60)
         r.raise_for_status()
         if size >= 0 and len(r.content) != size:
             raise IOError(f"size {len(r.content)} != expected {size}")
         return r.content
+    return with_retries(download)
 
-    body = with_retries(download)
+
+def copy_one(s, s3, name, size):
+    body = fetch(s, name, size)
     with_retries(lambda: s3.put_object(
         Bucket=s["E2_BUCKET"], Key=name, Body=body, ContentType="image/jpeg"))
     return len(body)
@@ -56,6 +64,8 @@ def main():
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--limit", type=int, help="copy at most N objects (trial run)")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--orphans-dir", help="download the orphans (objects with no DB row) "
+                    "into this local folder, keeping their key paths; they are never put in e2")
     ap.add_argument("--failed-file", default="backfill_failed.txt")
     args = ap.parse_args()
 
@@ -69,7 +79,7 @@ def main():
     conn.close()
     print(f"  {len(objects)} objects in Supabase bucket '{SB_BUCKET}': "
           f"{len(wanted)} wanted, {len(orphans)} orphans")
-    for name, why in orphans[:10]:
+    for name, _size, why in orphans[:10]:
         print(f"    orphan: {name} ({why})")
 
     print("Listing e2 bucket ...")
@@ -104,6 +114,24 @@ def main():
             with open(args.failed_file, "w", encoding="utf-8") as fh:
                 fh.write("\n".join(failures) + "\n")
             print(f"  failures written to {args.failed_file} (re-run to retry them)")
+
+    if orphans and not args.dry_run:
+        if not args.orphans_dir:
+            print(f"NOTE: {len(orphans)} orphans were not downloaded. Re-run with "
+                  f"--orphans-dir <folder> to keep local copies before running cleanup.py.")
+        else:
+            todo_o = orphans_not_downloaded(orphans, args.orphans_dir)
+            print(f"Downloading {len(todo_o)} of {len(orphans)} orphans to {args.orphans_dir} ...")
+            for name, size in todo_o:
+                try:
+                    body = fetch(s, name, size)
+                    path = orphan_local_path(args.orphans_dir, name)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "wb") as fh:
+                        fh.write(body)
+                    print(f"  downloaded {path}")
+                except Exception as e:
+                    print(f"  FAILED orphan {name}: {type(e).__name__}: {e}")
 
     print("Verifying against Supabase ...")
     e2 = list_e2(s3, s["E2_BUCKET"])
