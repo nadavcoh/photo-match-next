@@ -16,7 +16,7 @@ locked to one hardcoded email address.
 - **Backblaze B2** (S3-compatible API) — full-size original media previews
 - **IDrive e2** (S3-compatible API) — small JPEG thumbnails
 - **sharp** — server-side pixel-distance scoring
-- Deployed on **Vercel**
+- Deployed on **Vercel** (functions in `fra1`, next to the Supabase database)
 
 ## Getting started
 
@@ -48,7 +48,7 @@ B2_MEDIA_PREFIX=        # optional — only if media isn't stored at bucket root
 # IDrive e2 (S3-compatible API) — thumbnails; a read-only key is enough here
 E2_ACCESS_KEY_ID=
 E2_SECRET_ACCESS_KEY=
-E2_ENDPOINT=            # the account's e2 S3 endpoint, from the e2 console
+E2_ENDPOINT=            # bare regional endpoint, e.g. https://s3.<region>.idrivee2.com (no bucket name in the host)
 E2_REGION=              # the bucket's region name
 E2_BUCKET=thumbnails    # optional, defaults to "thumbnails"
 
@@ -190,3 +190,7 @@ npx next build
 ```
 
 Database-side checks live in `sql/` — see "Checking recall" above.
+
+One-time migration scripts (Supabase Storage → IDrive e2: backfill, verify,
+cleanup, `VACUUM FULL`) live in `scripts/thumbnails_to_e2/` and
+`sql/thumbnails_to_e2/` — see the README there for the runbook.
