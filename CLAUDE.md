@@ -576,7 +576,7 @@ exists in the RPC output, types or UI.
 | `filesize` (text) | merged into `filesize_bytes` | — |
 
 Things to remember:
-- **Current state (updated 2026-11-08).** The column normalization is finished on the
+- **Current state (updated 2026-11-09).** The column normalization is finished on the
   live DB (runbook steps 0–6): the old columns are dropped (contract), both
   tables were `VACUUM FULL`ed, and the two big HNSW indexes were rebuilt by
   migration `20261106120000_rebuild_big_hnsw_indexes.sql` (m = 32,
@@ -593,7 +593,7 @@ Things to remember:
   not re-run. The deployed match route served requests without errors after the
   contract. The webos TV app was redeployed from the commit that reads the
   normalized columns (its first attempt on 2026-11-06 failed because the TV
-  was unreachable); a photo with a location still has to be checked on the TV.
+  was unreachable) and the location check on the TV passed on 2026-11-09.
 - **`filesize_bytes` is mixed precision.** Rows scraped after the technical-
   metadata migration have the exact on-disk size; older rows were back-filled
   by parsing Google Photos' display text with decimal units (KB = 1000), i.e.
