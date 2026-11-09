@@ -229,8 +229,31 @@ E2_BUCKET               # optional, default "thumbnails"
 E2_PATH_STYLE           # optional, default path-style; "false" = virtual-hosted
 ```
 
-The one-time migration (backfill, cutover order, cleanup, `VACUUM FULL` of
-`storage.objects`) is in `scripts/thumbnails_to_e2/README.md`.
+**Status (2026-11-08).** The cutover is done: all 253,779 thumbnails were
+backfilled to e2 (verified: 0 missing, 0 size mismatches), the app (commit
+`382d3c3`) serves them from e2 and the phash scrapers upload there. Supabase
+Storage still holds its old copy as the rollback. Removing it with
+`cleanup.py` (no way back) and then running `VACUUM FULL storage.objects` is
+still pending; until then the database stays at ~397 MB (about 170 MB
+afterwards — an estimate, confirm the real number).
+
+**Setup gotchas**
+- `E2_ENDPOINT` is the bare regional endpoint (`https://s3.<region>.idrivee2.com`),
+  never the bucket's own hostname (`thumbnails.s3.…`): with the bucket name in
+  the host every call fails with `NoSuchKey`. The bucket is in Frankfurt (e2
+  calls the region "Frankfurt-2"; S3 region name `eu-central-1`).
+- Vercel functions run in `fra1` (`vercel.json` `regions`), next to the
+  Supabase database in Zurich and the EU bucket.
+- The app needs only a read-only e2 key; the scrapers and the migration
+  scripts use a read/write key.
+- Orphans (Supabase objects with no DB row; 4 on 2026-11-08) are never copied
+  to e2. `backfill.py --orphans-dir <folder>` downloads them, and
+  `cleanup.py` refuses to delete anything until they are there (or you pass
+  `--discard-orphans`).
+
+The one-time migration scripts (`backfill.py`, `cleanup.py`, the `VACUUM FULL`
+SQL in `sql/thumbnails_to_e2/`) and their runbook — cutover order, what each
+number in the output means — are in `scripts/thumbnails_to_e2/README.md`.
 
 ## Known dead/legacy bits worth knowing about
 
@@ -553,23 +576,24 @@ exists in the RPC output, types or UI.
 | `filesize` (text) | merged into `filesize_bytes` | — |
 
 Things to remember:
-- **Current state (2026-11-06).** The column normalization is finished on the
+- **Current state (updated 2026-11-08).** The column normalization is finished on the
   live DB (runbook steps 0–6): the old columns are dropped (contract), both
   tables were `VACUUM FULL`ed, and the two big HNSW indexes were rebuilt by
   migration `20261106120000_rebuild_big_hnsw_indexes.sql` (m = 32,
   ef_construction = 200). Database size: ~420 MB before, 288 MB with the big
   indexes dropped, ~397 MB with them back — the net saving of this work is
-  small. The big remaining item is moving thumbnails out of Supabase Storage
-  (`storage.objects`: 253k rows, 226 MB including indexes, 898 MB of files).
-  The code for the move to IDrive e2 is written (2026-11-07) and the cutover
-  runbook is `scripts/thumbnails_to_e2/README.md`; update this note once the
-  cutover and cleanup have actually been done. After the rebuild,
+  small. The big remaining item was moving thumbnails out of Supabase Storage
+  (`storage.objects`: 253k rows, 226 MB including indexes, 898 MB of files):
+  the move to IDrive e2 is done as of 2026-11-08 (see "Thumbnails: IDrive
+  e2"), but the Supabase copy has not been deleted yet, so the database is
+  still ~397 MB — update this note after `cleanup.py` and the `VACUUM FULL`.
+  After the rebuild,
   Part 1 of `sql/hnsw_recall_tests.sql` showed zero misses for `fast` and
   `wide` against `exact` in all four tests (200 samples each); Parts 2–3 were
   not re-run. The deployed match route served requests without errors after the
-  contract. The webos TV app must be redeployed from the commit that reads the
-  normalized columns: its GitHub Action failed on 2026-11-06 because the TV was
-  unreachable, and until it runs the old build can't read locations.
+  contract. The webos TV app was redeployed from the commit that reads the
+  normalized columns (its first attempt on 2026-11-06 failed because the TV
+  was unreachable); a photo with a location still has to be checked on the TV.
 - **`filesize_bytes` is mixed precision.** Rows scraped after the technical-
   metadata migration have the exact on-disk size; older rows were back-filled
   by parsing Google Photos' display text with decimal units (KB = 1000), i.e.
