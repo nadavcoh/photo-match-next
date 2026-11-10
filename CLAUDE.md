@@ -99,6 +99,14 @@ supabase/migrations/20261106120000_rebuild_big_hnsw_indexes.sql
                                ← Same idempotent function as ...120100, as a new migration:
                                  rebuilds the two big HNSW indexes dropped for the
                                  normalized-columns work (the other two are skipped).
+supabase/migrations/20261110120000_restrict_rls_to_owner.sql
+                               ← Replaces every overlapping RLS policy with one owner-email
+                                 policy per command (SELECT on all tables, UPDATE on `wa`),
+                                 revokes TRUNCATE/TRIGGER/REFERENCES from `authenticated` and
+                                 all table access from `anon`, pins `restrict_signup`'s
+                                 search_path. Supersedes the policy part of
+                                 supabase-rls-and-rpc.sql — re-apply this migration after
+                                 running that file on a fresh database.
 supabase/migrations/20261103120000_normalize_columns_expand.sql
                                ← DDL for the normalized columns (lookup tables, new
                                  columns, URL builders) — see "Normalized columns".
@@ -139,9 +147,13 @@ that all need to stay in sync if it ever changes:
 
 No service-role key is used anywhere (by design — see git history /
 code comments about its removal). All DB and Storage access goes through
-the authenticated user's JWT, with RLS policies in `supabase-rls-and-rpc.sql`
-granting the `authenticated` role full CRUD on `wa` and read-only on
-`hashes`/`partner`.
+the authenticated user's JWT. RLS limits every table to the owner's email
+(`auth.jwt() ->> 'email'`), see migration
+`20261110120000_restrict_rls_to_owner.sql`: `authenticated` gets SELECT on
+`hashes`, `partner`, `wa` and the lookup tables, and UPDATE on `wa` (the
+commit / skip / undo routes), nothing else. There are no INSERT/DELETE
+policies: the scrapers write through direct database connections, which
+bypass RLS. `anon` has no access to these tables.
 
 ## Cloudinary → Backblaze B2 migration (done — see below)
 
@@ -235,7 +247,8 @@ backfilled to e2 (verified: 0 missing, 0 size mismatches), the app (commit
 Storage still holds its old copy as the rollback. Removing it with
 `cleanup.py` (no way back) and then running `VACUUM FULL storage.objects` is
 still pending; until then the database stays at ~397 MB (about 170 MB
-afterwards — an estimate, confirm the real number).
+afterwards — an estimate, confirm the real number). The 4 orphans were
+downloaded on 2026-11-10; cleanup waits for a few more days of normal use.
 
 **Setup gotchas**
 - `E2_ENDPOINT` is the bare regional endpoint (`https://s3.<region>.idrivee2.com`),
@@ -249,9 +262,13 @@ afterwards — an estimate, confirm the real number).
 - Orphans (Supabase objects with no DB row; 4 on 2026-11-08) are never copied
   to e2. `backfill.py --orphans-dir <folder>` downloads them, and
   `cleanup.py` refuses to delete anything until they are there (or you pass
-  `--discard-orphans`).
+  `--discard-orphans`). `orphan_lookup.py --config <config.json> --orphans-dir
+  <folder>` (read-only) computes each orphan's phash and lists the closest rows
+  in `hashes` and `partner` by Hamming distance, to see whether an orphan belongs
+  to a row that still exists (0-4 bits: very likely the same item; the DB hash is
+  of the full-size original, so a thumbnail may differ by a few bits).
 
-The one-time migration scripts (`backfill.py`, `cleanup.py`, the `VACUUM FULL`
+The one-time migration scripts (`backfill.py`, `cleanup.py`, `orphan_lookup.py`, the `VACUUM FULL`
 SQL in `sql/thumbnails_to_e2/`) and their runbook — cutover order, what each
 number in the output means — are in `scripts/thumbnails_to_e2/README.md`.
 
@@ -544,8 +561,8 @@ next three (cause not established — don't read much into a single slow call).
 
 ## Working conventions for this project
 
-- Package modified/new files as a `tar.gz` archive when delivering changes
-  rather than presenting individual files inline.
+- Don't deliver changes as a `tar.gz` (owner preference, 2026-11-10); present
+  files individually, or push when asked.
 - Schema/function changes go in `supabase/migrations/<YYYYMMDDHHMMSS>_name.sql`:
   plain SQL, idempotent, no `psql` meta-commands (`\set`, `\gexec`, …), and
   keep `supabase-rls-and-rpc.sql` in sync for fresh installs. Never edit a
@@ -602,8 +619,8 @@ Things to remember:
   not treat it as exact.
 - The partner-library id is hard-coded in `gphoto_partner_photo_url()` (and in
   `partner.py`). A URL for any other library is refused by the scraper.
-- The lookup tables need the authenticated SELECT policy (the functions are
-  SECURITY INVOKER). `jpeg_quant_profiles` deliberately has none.
+- The lookup tables need the owner-only SELECT policy (the functions are
+  SECURITY INVOKER, so RLS applies to the caller). `jpeg_quant_profiles` deliberately has none.
 - Inserts without a valid `photo_id` are rejected by the database
   (`NOT NULL` + `CHECK`) once the contract step has run; the scrapers also
   validate before inserting.
