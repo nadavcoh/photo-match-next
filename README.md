@@ -93,6 +93,7 @@ set the Supabase directory to `supabase` and the production branch to
 | `20261103120000_normalize_columns_expand.sql` | Adds the normalized columns (`photo_id`, `lat`/`lon`, `width`/`height`, `*_id`, `quant_profile_id`) and the lookup tables with their RLS policies. Additive; the old columns keep working. See [Normalized columns](#normalized-columns). |
 | `20261103120100_match_functions_read_normalized_columns.sql` | Rewrites the four `match_*` functions to read the normalized columns (and drops the legacy `filesize` output). |
 | `20261106120000_rebuild_big_hnsw_indexes.sql` | Same idempotent function as `...120100`: rebuilds the two big HNSW indexes (`hashes`, `partner`) that were dropped during the normalization, skipping the ones already on `m = 32`. **Slow and write-blocking.** |
+| `20261110120000_restrict_rls_to_owner.sql` | Replaces the overlapping RLS policies with one owner-email policy per command (SELECT on every table, UPDATE on `wa`), revokes `TRUNCATE`/`TRIGGER`/`REFERENCES` from `authenticated` and all access to those tables from `anon`, and pins `restrict_signup`'s `search_path`. Supersedes the policies in `supabase-rls-and-rpc.sql`: apply it after that file on a fresh database. Quick. |
 
 **Before the integration first applies these to production**, run the second
 one by hand so it has nothing left to build (the integration then just
@@ -192,5 +193,5 @@ npx next build
 Database-side checks live in `sql/` — see "Checking recall" above.
 
 One-time migration scripts (Supabase Storage → IDrive e2: backfill, verify,
-cleanup, `VACUUM FULL`) live in `scripts/thumbnails_to_e2/` and
+cleanup, orphan lookup, `VACUUM FULL`) live in `scripts/thumbnails_to_e2/` and
 `sql/thumbnails_to_e2/` — see the README there for the runbook.
