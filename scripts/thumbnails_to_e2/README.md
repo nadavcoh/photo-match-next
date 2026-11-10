@@ -32,6 +32,12 @@ separate **read-only** key.
    (`hashes_214548`, `partner_34734`, …) are objects with no DB row; they are
    never copied to e2. Add `--orphans-dir <folder>` to a real run to download
    them to your machine instead (keeps their key paths).
+   `orphan_lookup.py` (read-only) then hashes each downloaded orphan and lists
+   the closest rows in `hashes` / `partner` by Hamming distance, to see
+   whether an orphan belongs to a row that still exists:
+   `python orphan_lookup.py --config config.json --orphans-dir <folder>`
+   (needs `imagehash`, `pillow`, `psycopg2-binary`; 0-4 bits = very likely the
+   same item).
 2. **Backfill.** `python backfill.py --config config.json`. Supabase is only
    read. Safe to re-run and to interrupt: it lists e2 first and copies only
    what is missing or has a different size. Failures go to
