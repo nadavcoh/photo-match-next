@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next'
 import './globals.css'
 import Script from 'next/script';
+import WarmUp from './WarmUp'
 
 export const metadata: Metadata = {
   title: 'Photo Match',
@@ -49,6 +50,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </Script>
           </>
 
+<WarmUp />
 {children}</body>
     </html>
   )
