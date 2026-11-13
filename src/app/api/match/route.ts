@@ -314,6 +314,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const offset    = Math.max(0, parseInt(searchParams.get('offset') ?? '0', 10))
   const mode      = parseMode(searchParams.get('mode'))
   const threshold = getThreshold()
+  // Timing: one log line per request with per-phase milliseconds (see end of handler).
+  const t0 = performance.now()
+  const marks: Record<string, number> = {}
+  let lastMark = t0
+  const mark = (name: string) => { const n = performance.now(); marks[name] = Math.round(n - lastMark); lastMark = n }
 
   try {
     const supabase = await createClient()
@@ -326,6 +331,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       .is('processed', null)
 
     if (countError) throw new Error(countError.message)
+    mark('count')
 
     const total = count ?? 0
     if (total === 0) {
@@ -346,6 +352,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       .range(offset, offset)
 
     if (waError) throw new Error(waError.message)
+    mark('item')
     if (!waRows?.length) {
       return NextResponse.json(
         { count: 0, offset, item: null, candidates: [], partner_candidates: [], auto_select_id: null, search_mode: mode } as MatchResponse,
@@ -391,12 +398,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
     // ── Download all thumbnails for pixel-distance computation ─────────────
     // Layout: [wa, ...hashes, ...partner]
+    mark('rpc')
     const nHashes = candidates.length
     const allThumbs = await Promise.all([
       downloadThumbnailBytes(waItem.thumbnail_url),
       ...candidates.map((c) => downloadThumbnailBytes(c.thumbnail_url)),
       ...partnerCandidates.map((c) => downloadThumbnailBytes(c.thumbnail_url)),
     ])
+    mark('e2_download')
     const waThumbnail  = allThumbs[0]
     const hashesThumbs = allThumbs.slice(1, 1 + nHashes)
     const partnerThumbs = allThumbs.slice(1 + nHashes)
@@ -423,6 +432,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       pixelDistanceFallback(candidatesWithPx)
 
     // ── Swap thumbnail keys for presigned e2 URLs (local HMAC, no I/O) ──────
+    mark('pixel_select')
     const signUrl = async (key: string): Promise<string> => (await presignThumbnailUrl(key)) ?? ''
     const [signedItem, signedCandidates, signedPartner] = await Promise.all([
       signUrl(waItem.thumbnail_url).then((u) => ({ ...waItem, thumbnail_url: u })),
@@ -430,6 +440,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       Promise.all(partnerCandidatesWithPx.map(async (c) => ({ ...c, thumbnail_url: await signUrl(c.thumbnail_url) }))),
     ])
 
+    mark('sign')
+    console.log(
+      `[/api/match] ${Math.round(performance.now() - t0)} ms region=${process.env.VERCEL_REGION ?? '?'} mode=${mode} offset=${offset} video=${isVideo} ` +
+      `hashes=${candidates.length} partner=${partnerCandidates.length} thumbs=${allThumbs.length} ` +
+      Object.entries(marks).map(([k, v]) => `${k}=${v}`).join(' '),
+    )
     return NextResponse.json(
       {
         count: total,
