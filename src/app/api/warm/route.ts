@@ -14,6 +14,7 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
 import { compactApiStats, recordApiStat } from '@/lib/stats'
+import { getIndex, maintainIndex } from '@/lib/hashIndex'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 20
@@ -38,6 +39,22 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   after(async () => {
     const t0 = performance.now()
+
+    // In-memory matching (MATCH_ENGINE=memory|compare): the ping loads / refreshes
+    // the hash index and keeps this instance alive. Once the index is ready there is
+    // no HNSW search to warm, so the database warm-up below is skipped.
+    if (process.env.MATCH_ENGINE === 'memory' || process.env.MATCH_ENGINE === 'compare') {
+      await maintainIndex(supabase)
+      if (getIndex()) {
+        await recordApiStat(supabase, {
+          route: 'warm', ok: true, ms: Math.round(performance.now() - t0),
+          region: process.env.VERCEL_REGION ?? null, warm_n: 0, warm_samples: 0,
+        })
+        if (Math.random() < 1 / 500) await compactApiStats(supabase)
+        return
+      }
+    }
+
     const results = await Promise.allSettled(
       Array.from({ length: n }, () => supabase.rpc('warm_match_index', { p_budget_ms: WARM_BUDGET_MS })),
     )

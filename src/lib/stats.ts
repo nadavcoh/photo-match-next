@@ -15,6 +15,7 @@ export interface ApiStat {
   region: string | null
   // match only
   mode?: 'fast' | 'wide' | 'exact'
+  engine?: 'db' | 'memory' // which engine answered the search (see src/lib/hashIndex.ts)
   is_video?: boolean
   hashes?: number
   partner?: number

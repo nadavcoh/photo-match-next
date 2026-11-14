@@ -19,6 +19,7 @@ import { thumbnailUrl } from '@/lib/thumbnails'
 import { downloadThumbnailBytes, presignThumbnailUrl } from '@/lib/e2'
 import { pixelDistance, pixelDistanceFallback } from '@/lib/pixelDistance'
 import { recordApiStat } from '@/lib/stats'
+import { getIndex, maintainIndex, parseBits64, searchImage, searchVideo } from '@/lib/hashIndex'
 import type { WAItem, HashCandidate, PartnerCandidate, MatchResponse, SearchMode } from '@/lib/types'
 
 // ── Config ─────────────────────────────────────────────────────────────────────
@@ -116,6 +117,82 @@ function technicalMetadataFrom(r: TechnicalMetadataRpcRow): TechnicalMetadataRpc
   }
 }
 
+// ── Search engine: database functions or the in-memory index ───────────────────
+//
+// 'db'      the match_* SQL functions (fast / wide / exact modes).
+// 'memory'  exact Hamming scan over the hashes kept in this function's memory
+//           (src/lib/hashIndex.ts); only the display columns of the matching rows
+//           come from the database. The index loads in the background, so a fresh
+//           instance answers from the database until it is ready, and any problem
+//           falls back to the database too. `mode` is ignored: it is always exact.
+// 'compare' answers like 'memory' and, after the response, runs the database in
+//           exact mode and logs whether the two agree ([match-compare]).
+//
+// Chosen by `?engine=` (handy for trying it in the browser), else the MATCH_ENGINE
+// environment variable, else 'db'.
+
+type Engine = 'db' | 'memory' | 'compare'
+
+function pickEngine(v: string | null): Engine {
+  const e = v ?? process.env.MATCH_ENGINE ?? 'db'
+  return e === 'memory' || e === 'compare' ? e : 'db'
+}
+
+/** Set to false by a fetcher that had to fall back to the database. */
+interface EngineCtx { memory: boolean }
+
+async function memoryHashesRows(
+  supabase: SupabaseClient, waItem: WAItem, isVideo: boolean, threshold: number,
+): Promise<HashesRpcRow[] | null> {
+  const idx = getIndex()
+  if (!idx) return null
+  let hits: { id: number; hamming: number | null; thumb_hamming: number | null }[]
+  if (!isVideo) {
+    const q = parseBits64(waItem.hash_bit)
+    if (!q) return null
+    hits = searchImage(idx.hashes, q, threshold).map((h) => ({ id: h.id, hamming: h.hamming, thumb_hamming: null }))
+  } else {
+    const hash = parseBits64(waItem.hash_bit)
+    const thumb = parseBits64(waItem.video_thumb_hash_bit)
+    if ((waItem.hash_bit && !hash) || (waItem.video_thumb_hash_bit && !thumb)) return null
+    hits = searchVideo(idx.hashes, hash, thumb, threshold)
+  }
+  if (hits.length === 0) return []
+  const { data, error } = await supabase.rpc('get_hashes_rows', { p_ids: hits.map((h) => h.id) })
+  if (error || !data) { console.error('[/api/match] get_hashes_rows failed:', error?.message); return null }
+  const byId = new Map((data as HashesRpcRow[]).map((r) => [r.id, r]))
+  return hits.flatMap((h) => {
+    const r = byId.get(h.id)
+    return r ? [{ ...r, hamming: h.hamming, thumb_hamming: h.thumb_hamming }] : []
+  })
+}
+
+async function memoryPartnerRows(
+  supabase: SupabaseClient, waItem: WAItem, isVideo: boolean, threshold: number,
+): Promise<PartnerRpcRow[] | null> {
+  const idx = getIndex()
+  if (!idx) return null
+  let hits: { id: number; hamming: number | null; thumb_hamming: number | null }[]
+  if (!isVideo) {
+    const q = parseBits64(waItem.hash_bit)
+    if (!q) return null
+    hits = searchImage(idx.partner, q, threshold).map((h) => ({ id: h.id, hamming: h.hamming, thumb_hamming: null }))
+  } else {
+    const hash = parseBits64(waItem.hash_bit)
+    const thumb = parseBits64(waItem.video_thumb_hash_bit)
+    if ((waItem.hash_bit && !hash) || (waItem.video_thumb_hash_bit && !thumb)) return null
+    hits = searchVideo(idx.partner, hash, thumb, threshold)
+  }
+  if (hits.length === 0) return []
+  const { data, error } = await supabase.rpc('get_partner_rows', { p_ids: hits.map((h) => h.id) })
+  if (error || !data) { console.error('[/api/match] get_partner_rows failed:', error?.message); return null }
+  const byId = new Map((data as PartnerRpcRow[]).map((r) => [r.id, r]))
+  return hits.flatMap((h) => {
+    const r = byId.get(h.id)
+    return r ? [{ ...r, hamming: h.hamming, thumb_hamming: h.thumb_hamming }] : []
+  })
+}
+
 // ── Candidate fetchers ─────────────────────────────────────────────────────────
 
 async function fetchHashesCandidates(
@@ -124,18 +201,23 @@ async function fetchHashesCandidates(
   isVideo: boolean,
   threshold: number,
   mode: SearchMode,
+  ctx: EngineCtx,
 ): Promise<HashCandidate[]> {
   if (!isVideo) {
     if (!waItem.hash_bit) return []
 
-    const { data, error } = await supabase.rpc('match_hashes_image', withMode({
-      p_hash_bit: waItem.hash_bit,
-      p_threshold: threshold,
-    }, mode))
-    if (error) return rpcFailed('match_hashes_image', error.message, mode)
-    if (!data) return []
+    let rows: HashesRpcRow[] | null = ctx.memory ? await memoryHashesRows(supabase, waItem, isVideo, threshold) : null
+    if (!rows) {
+      ctx.memory = false
+      const { data, error } = await supabase.rpc('match_hashes_image', withMode({
+        p_hash_bit: waItem.hash_bit,
+        p_threshold: threshold,
+      }, mode))
+      if (error) return rpcFailed('match_hashes_image', error.message, mode)
+      rows = (data as HashesRpcRow[] | null) ?? []
+    }
 
-    return (data as HashesRpcRow[]).map((r) => ({
+    return rows.map((r) => ({
       id: r.id,
       filename: r.filename ?? '',
       camera_name: r.camera_name,
@@ -162,15 +244,19 @@ async function fetchHashesCandidates(
   // including the GIF-as-image edge case.
   if (!waItem.hash_bit && !waItem.video_thumb_hash_bit) return []
 
-  const { data, error } = await supabase.rpc('match_hashes_video', withMode({
-    p_hash_bit: waItem.hash_bit,
-    p_thumb_bit: waItem.video_thumb_hash_bit,
-    p_threshold: threshold,
-  }, mode))
-  if (error) return rpcFailed('match_hashes_video', error.message, mode)
-  if (!data) return []
+  let rows: HashesRpcRow[] | null = ctx.memory ? await memoryHashesRows(supabase, waItem, isVideo, threshold) : null
+  if (!rows) {
+    ctx.memory = false
+    const { data, error } = await supabase.rpc('match_hashes_video', withMode({
+      p_hash_bit: waItem.hash_bit,
+      p_thumb_bit: waItem.video_thumb_hash_bit,
+      p_threshold: threshold,
+    }, mode))
+    if (error) return rpcFailed('match_hashes_video', error.message, mode)
+    rows = (data as HashesRpcRow[] | null) ?? []
+  }
 
-  return (data as HashesRpcRow[]).map((r) => ({
+  return rows.map((r) => ({
     id: r.id,
     filename: r.filename ?? '',
     camera_name: r.camera_name,
@@ -196,18 +282,23 @@ async function fetchPartnerCandidates(
   isVideo: boolean,
   threshold: number,
   mode: SearchMode,
+  ctx: EngineCtx,
 ): Promise<PartnerCandidate[]> {
   if (!isVideo) {
     if (!waItem.hash_bit) return []
 
-    const { data, error } = await supabase.rpc('match_partner_image', withMode({
-      p_hash_bit: waItem.hash_bit,
-      p_threshold: threshold,
-    }, mode))
-    if (error) return rpcFailed('match_partner_image', error.message, mode)
-    if (!data) return []
+    let rows: PartnerRpcRow[] | null = ctx.memory ? await memoryPartnerRows(supabase, waItem, isVideo, threshold) : null
+    if (!rows) {
+      ctx.memory = false
+      const { data, error } = await supabase.rpc('match_partner_image', withMode({
+        p_hash_bit: waItem.hash_bit,
+        p_threshold: threshold,
+      }, mode))
+      if (error) return rpcFailed('match_partner_image', error.message, mode)
+      rows = (data as PartnerRpcRow[] | null) ?? []
+    }
 
-    return (data as PartnerRpcRow[]).map((r) => ({
+    return rows.map((r) => ({
       id: r.id,
       filename: r.filename ?? '',
       timestamp: isoOrNull(r.ts),
@@ -225,15 +316,19 @@ async function fetchPartnerCandidates(
 
   if (!waItem.hash_bit && !waItem.video_thumb_hash_bit) return []
 
-  const { data, error } = await supabase.rpc('match_partner_video', withMode({
-    p_hash_bit: waItem.hash_bit,
-    p_thumb_bit: waItem.video_thumb_hash_bit,
-    p_threshold: threshold,
-  }, mode))
-  if (error) return rpcFailed('match_partner_video', error.message, mode)
-  if (!data) return []
+  let rows: PartnerRpcRow[] | null = ctx.memory ? await memoryPartnerRows(supabase, waItem, isVideo, threshold) : null
+  if (!rows) {
+    ctx.memory = false
+    const { data, error } = await supabase.rpc('match_partner_video', withMode({
+      p_hash_bit: waItem.hash_bit,
+      p_thumb_bit: waItem.video_thumb_hash_bit,
+      p_threshold: threshold,
+    }, mode))
+    if (error) return rpcFailed('match_partner_video', error.message, mode)
+    rows = (data as PartnerRpcRow[] | null) ?? []
+  }
 
-  return (data as PartnerRpcRow[]).map((r) => ({
+  return rows.map((r) => ({
     id: r.id,
     filename: r.filename ?? '',
     timestamp: isoOrNull(r.ts),
@@ -310,10 +405,48 @@ function computeAutoSelect(
 
 // ── Route handler ──────────────────────────────────────────────────────────────
 
+/**
+ * 'compare' engine: runs the database in exact mode and logs whether it returns the
+ * same rows, in the same order, with the same distances as the in-memory scan.
+ */
+async function compareWithDatabase(
+  supabase: SupabaseClient,
+  waItem: WAItem,
+  isVideo: boolean,
+  threshold: number,
+  memHashes: HashCandidate[],
+  memPartner: PartnerCandidate[],
+): Promise<void> {
+  try {
+    const dbCtx: EngineCtx = { memory: false }
+    const [dbHashes, dbPartner] = await Promise.all([
+      fetchHashesCandidates(supabase, waItem, isVideo, threshold, 'exact', dbCtx),
+      fetchPartnerCandidates(supabase, waItem, isVideo, threshold, 'exact', dbCtx),
+    ])
+    const key = (c: { id: number; hamming: number | null; thumb_hamming: number | null }) =>
+      `${c.id}:${c.hamming ?? '-'}:${c.thumb_hamming ?? '-'}`
+    const diff = (label: string, mem: { id: number; hamming: number | null; thumb_hamming: number | null }[], db: typeof mem) => {
+      const a = mem.map(key)
+      const b = db.map(key)
+      if (a.length === b.length && a.every((k, i) => k === b[i])) return null
+      return `${label}: memory=[${a.slice(0, 8).join(' ')}]${a.length > 8 ? '…' : ''} db=[${b.slice(0, 8).join(' ')}]${b.length > 8 ? '…' : ''}`
+    }
+    const problems = [diff('hashes', memHashes, dbHashes), diff('partner', memPartner, dbPartner)].filter(Boolean)
+    if (problems.length === 0) {
+      console.log(`[match-compare] ok wa=${waItem.id} video=${isVideo} hashes=${memHashes.length} partner=${memPartner.length}`)
+    } else {
+      console.error(`[match-compare] MISMATCH wa=${waItem.id} video=${isVideo} ${problems.join(' | ')}`)
+    }
+  } catch (e) {
+    console.error('[match-compare] failed:', e instanceof Error ? e.message : e)
+  }
+}
+
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const { searchParams } = new URL(request.url)
   const offset    = Math.max(0, parseInt(searchParams.get('offset') ?? '0', 10))
   const mode      = parseMode(searchParams.get('mode'))
+  const engine    = pickEngine(searchParams.get('engine'))
   const threshold = getThreshold()
   // Timing: one log line per request with per-phase milliseconds (see end of handler).
   const t0 = performance.now()
@@ -391,13 +524,17 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // Partner is optional, so its failures are swallowed — except when the
     // user explicitly escalated, where a silent empty result would be
     // misleading.
+    // With the in-memory engine `mode` is ignored (the scan is always exact); until
+    // the index is loaded, or if anything goes wrong, the database answers instead.
+    const ctx: EngineCtx = { memory: engine !== 'db' && getIndex() !== null }
     const [candidates, partnerCandidates] = await Promise.all([
-      fetchHashesCandidates(supabase, waItem, isVideo, threshold, mode),
-      fetchPartnerCandidates(supabase, waItem, isVideo, threshold, mode).catch((e: unknown): PartnerCandidate[] => {
+      fetchHashesCandidates(supabase, waItem, isVideo, threshold, mode, ctx),
+      fetchPartnerCandidates(supabase, waItem, isVideo, threshold, mode, ctx).catch((e: unknown): PartnerCandidate[] => {
         if (mode !== 'fast') throw e
         return []
       }),
     ])
+    const engineUsed: 'db' | 'memory' = ctx.memory ? 'memory' : 'db'
 
     // ── Download all thumbnails for pixel-distance computation ─────────────
     // Layout: [wa, ...hashes, ...partner]
@@ -446,11 +583,20 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     mark('sign')
     console.log(
       `[/api/match] ${Math.round(performance.now() - t0)} ms region=${process.env.VERCEL_REGION ?? '?'} mode=${mode} offset=${offset} video=${isVideo} ` +
-      `hashes=${candidates.length} partner=${partnerCandidates.length} thumbs=${allThumbs.length} ` +
+      `engine=${engineUsed} hashes=${candidates.length} partner=${partnerCandidates.length} thumbs=${allThumbs.length} ` +
       Object.entries(marks).map(([k, v]) => `${k}=${v}`).join(' '),
     )
+    if (engine !== 'db') {
+      // Load / refresh the index after the response; 'compare' also checks it against the database.
+      after(async () => {
+        await maintainIndex(supabase)
+        if (engine === 'compare' && engineUsed === 'memory') {
+          await compareWithDatabase(supabase, waItem, isVideo, threshold, candidates, partnerCandidates)
+        }
+      })
+    }
     after(() => recordApiStat(supabase, {
-      route: 'match', ok: true, ms: Math.round(performance.now() - t0),
+      route: 'match', ok: true, ms: Math.round(performance.now() - t0), engine: engineUsed,
       region: process.env.VERCEL_REGION ?? null, mode, is_video: isVideo,
       hashes: candidates.length, partner: partnerCandidates.length, thumbs: allThumbs.length,
       count_ms: marks.count ?? null, item_ms: marks.item ?? null, rpc_ms: marks.rpc ?? null,
