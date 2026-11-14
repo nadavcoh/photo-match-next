@@ -28,7 +28,7 @@ export default function WarmUp() {
       if (matchInFlight() > 0) { pending = true; return }
       pending = false
       try {
-        const res = await fetch('/api/warm?n=2', { method: 'POST', cache: 'no-store' })
+        const res = await fetch('/api/warm?n=1', { method: 'POST', cache: 'no-store' })
         if (res.status === 401) stopped = true
       } catch {
         // ignore: warming is best effort
