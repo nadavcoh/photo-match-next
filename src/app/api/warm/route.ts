@@ -18,6 +18,14 @@ import { compactApiStats, recordApiStat } from '@/lib/stats'
 export const dynamic = 'force-dynamic'
 export const maxDuration = 20
 
+/**
+ * Time budget handed to warm_match_index (its default is 4000). A cold connection
+ * needs about 1 s per search, so 4 s often ends before the connection is warm.
+ * Keep this well below the authenticated role's 8 s statement_timeout: the
+ * function only checks the budget between searches, so it can overrun by one.
+ */
+const WARM_BUDGET_MS = 5500
+
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -30,7 +38,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   after(async () => {
     const t0 = performance.now()
     const results = await Promise.allSettled(
-      Array.from({ length: n }, () => supabase.rpc('warm_match_index')),
+      Array.from({ length: n }, () => supabase.rpc('warm_match_index', { p_budget_ms: WARM_BUDGET_MS })),
     )
     const summary = results
       .map((r) =>
