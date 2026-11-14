@@ -61,6 +61,13 @@ src/app/api/media/route.ts    ← POST: { filename } → signed B2 GET URL for t
                                  full-size original (see lib/b2.ts)
 src/app/api/health/route.ts   ← GET: liveness check (polled every 30s client-side)
 src/app/api/version/route.ts  ← GET: git SHA / Vercel commit SHA, for Settings panel
+src/app/api/warm/route.ts     ← POST: runs warm_match_index() after the response (202) so the
+                                 database connection behind the next real search is warm;
+                                 also records a stats row (and now and then compacts stats)
+src/app/WarmUp.tsx            ← Client: pings /api/warm (n=1) every 15 s while the page is
+                                 visible, never while a /api/match request is in flight
+src/lib/inflight.ts           ← Counts in-flight /api/match requests (used by WarmUp)
+src/lib/stats.ts              ← Long-term statistics: recordApiStat() / compactApiStats()
 
 src/lib/types.ts              ← All shared request/response shapes
 src/lib/thumbnails.ts         ← Deterministic e2 object-key builder for small JPEG
@@ -118,6 +125,14 @@ supabase/migrations/20261103120100_match_functions_read_normalized_columns.sql
 sql/normalize_columns/        ← Runbook (README.md) + manual psql scripts for that
                                  change: backfill, contract (drops old columns),
                                  VACUUM FULL. Deliberately not in supabase/migrations.
+supabase/migrations/20261113120000_warm_match_index.sql
+                               ← warm_match_index(): a few random searches so a fresh
+                                 connection is warm for the next real request.
+supabase/migrations/20261114120000_api_stats.sql
+                               ← api_stats (raw rows) + api_stats_daily (rollup) +
+                                 compact_api_stats(); owner-only RLS. See "Warm-up and
+                                 long-term statistics".
+sql/stats/report.sql          ← Read-only example queries for those tables (manual script)
 sql/hnsw_recall_tests.sql     ← Recall/latency/behaviour checks for the match_* RPCs
                                  (a test, not a migration — deliberately not in
                                  supabase/migrations)
@@ -628,3 +643,33 @@ Things to remember:
   HNSW indexes. Updating every row without dropping them first is slow
   (≈3 ms/row per HNSW index on a 15k-row copy). See
   `sql/normalize_columns/README.md` for the procedure that was used.
+
+## Warm-up and long-term statistics
+
+- **Why a warm-up.** On the Free plan's Nano compute (about 0.5 GB RAM) a fresh
+  database connection is slow on its first searches (1-2 s each) and speeds up
+  to about 25 ms after a few dozen random searches; the warmth belongs to the
+  connection, not the database. `WarmUp` (mounted in `layout.tsx`) pings
+  `/api/warm?n=1` every 15 s while the page is visible, when it loads and when it
+  becomes visible again. The ping is skipped while an `/api/match` request is in
+  flight (`apiFetch` in `page.tsx` counts them via `src/lib/inflight.ts`) and runs
+  in the next gap (400 ms after the last request finishes). The mechanism is
+  unproven (per-connection cold cost; the API layer probably closes idle
+  connections after a while). In-memory matching is the alternative if this is
+  not enough.
+- **Long-term statistics.** Vercel Hobby keeps about 1 h of logs, so
+  `/api/match` and `/api/warm` each write one row to `public.api_stats` after the
+  response is sent (`after()` in the route; `src/lib/stats.ts`; failures are only
+  logged). Match rows hold total ms, the phase timings (count, item, rpc, e2
+  download, pixel + select, sign), mode, is_video, candidate counts, region and
+  `ok`; warm rows hold ms, `warm_n` and `warm_samples`. Idle gaps are not stored:
+  derive them with `lag(ts)` (see `sql/stats/report.sql`).
+- **Retention.** `compact_api_stats()` rolls finished days into
+  `api_stats_daily` (count, failures, avg, p50/p90/p99, max, rpc and e2 medians;
+  kept for good) and deletes raw rows older than 30 days (match) or 7 days (warm).
+  `/api/warm` calls it about once per 500 warm-ups; it is idempotent and never
+  overwrites an existing day. Expect well under 10 MB in the database at steady
+  state; change the defaults in the function if that is too much.
+- **Same rule as every other migration:** `20261114120000_api_stats.sql` is applied
+  by the Supabase GitHub integration, not through the connector. Reading the stats
+  with queries from `sql/stats/report.sql` is fine through the connector.
