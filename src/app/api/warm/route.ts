@@ -7,7 +7,7 @@
  * so the connection it lands on is fast for the next real request.
  *
  * Responds immediately (202) and runs the RPCs after the response, so nothing
- * waits for them. `?n=` (1-4, default 2) fires that many RPCs in parallel so
+ * waits for them. `?n=` (1-4, default 1) fires that many RPCs in parallel so
  * they land on different pooled connections.
  */
 
@@ -23,6 +23,7 @@ export const maxDuration = 20
  * on 2026-11-14: better median but a worse tail, and one warm-up ran 7.9 s, close to
  * the authenticated role's 8 s statement_timeout. The function only checks the
  * budget between searches, so it can overrun by one search; keep this well below 8 s.
+ * n=2 (two parallel warm-ups) was also tried on 2026-11-14 and gave no gain.
  */
 const WARM_BUDGET_MS = 4000
 
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   }
 
-  const n = Math.min(4, Math.max(1, parseInt(new URL(request.url).searchParams.get('n') ?? '2', 10) || 2))
+  const n = Math.min(4, Math.max(1, parseInt(new URL(request.url).searchParams.get('n') ?? '1', 10) || 1))
 
   after(async () => {
     const t0 = performance.now()
