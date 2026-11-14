@@ -13,7 +13,7 @@
 import { useEffect } from 'react'
 import { matchInFlight, onMatchIdle } from '@/lib/inflight'
 
-const INTERVAL_MS = 25_000
+const INTERVAL_MS = 15_000
 /** After the last request finishes, wait this long before warming; a new request usually follows right away. */
 const IDLE_DELAY_MS = 400
 
