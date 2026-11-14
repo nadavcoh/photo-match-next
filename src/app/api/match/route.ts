@@ -12,12 +12,13 @@
  *    the response is replaced by a short-lived presigned e2 URL.
  */
 
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase-server'
 import { thumbnailUrl } from '@/lib/thumbnails'
 import { downloadThumbnailBytes, presignThumbnailUrl } from '@/lib/e2'
 import { pixelDistance, pixelDistanceFallback } from '@/lib/pixelDistance'
+import { recordApiStat } from '@/lib/stats'
 import type { WAItem, HashCandidate, PartnerCandidate, MatchResponse, SearchMode } from '@/lib/types'
 
 // ── Config ─────────────────────────────────────────────────────────────────────
@@ -319,9 +320,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const marks: Record<string, number> = {}
   let lastMark = t0
   const mark = (name: string) => { const n = performance.now(); marks[name] = Math.round(n - lastMark); lastMark = n }
+  let statsClient: SupabaseClient | null = null // for the long-term stats row (src/lib/stats.ts)
 
   try {
     const supabase = await createClient()
+    statsClient = supabase
 
     // ── Count unmatched items ──────────────────────────────────────────────
     const { count, error: countError } = await supabase
@@ -446,6 +449,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       `hashes=${candidates.length} partner=${partnerCandidates.length} thumbs=${allThumbs.length} ` +
       Object.entries(marks).map(([k, v]) => `${k}=${v}`).join(' '),
     )
+    after(() => recordApiStat(supabase, {
+      route: 'match', ok: true, ms: Math.round(performance.now() - t0),
+      region: process.env.VERCEL_REGION ?? null, mode, is_video: isVideo,
+      hashes: candidates.length, partner: partnerCandidates.length, thumbs: allThumbs.length,
+      count_ms: marks.count ?? null, item_ms: marks.item ?? null, rpc_ms: marks.rpc ?? null,
+      e2_ms: marks.e2_download ?? null, pixel_ms: marks.pixel_select ?? null, sign_ms: marks.sign ?? null,
+    }))
     return NextResponse.json(
       {
         count: total,
@@ -460,6 +470,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     )
   } catch (err) {
     console.error('[/api/match] error:', err)
+    const failedClient = statsClient
+    if (failedClient) {
+      after(() => recordApiStat(failedClient, {
+        route: 'match', ok: false, ms: Math.round(performance.now() - t0),
+        region: process.env.VERCEL_REGION ?? null, mode,
+      }))
+    }
     const message = err instanceof Error ? err.message : 'Internal server error'
     return NextResponse.json({ error: message }, { status: 500 })
   }
