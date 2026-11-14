@@ -17,6 +17,7 @@ import type {
 } from '@/lib/types'
 import { WAMediaPreview } from '@/components/WAMediaPreview'
 import { createClient } from '@/lib/supabase-client'
+import { trackMatchRequest } from '@/lib/inflight'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -217,7 +218,10 @@ function lowDistanceVariant(d: number | null | undefined): '' | 'good' {
 }
 
 async function apiFetch<T>(url: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(url, opts)
+  // /api/match* requests are counted so the warm-up stays out of their way.
+  const res = url.startsWith('/api/match')
+    ? await trackMatchRequest(() => fetch(url, opts))
+    : await fetch(url, opts)
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText })) as { error?: string }
     throw new Error(body.error ?? res.statusText)
