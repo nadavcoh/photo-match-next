@@ -13,6 +13,7 @@
 
 import { NextRequest, NextResponse, after } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
+import { compactApiStats, recordApiStat } from '@/lib/stats'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 20
@@ -40,7 +41,22 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
             : JSON.stringify(r.value.data),
       )
       .join(' ')
-    console.log(`[/api/warm] n=${n} ${Math.round(performance.now() - t0)} ms ${summary}`)
+    const ms = Math.round(performance.now() - t0)
+    console.log(`[/api/warm] n=${n} ${ms} ms ${summary}`)
+
+    // Long-term stats: one row per warm-up (samples = searches the RPCs ran).
+    let samples = 0
+    let ok = true
+    for (const r of results) {
+      if (r.status === 'rejected' || r.value.error) { ok = false; continue }
+      const s = (r.value.data as { samples?: number } | null)?.samples
+      if (typeof s === 'number') samples += s
+    }
+    await recordApiStat(supabase, {
+      route: 'warm', ok, ms, region: process.env.VERCEL_REGION ?? null, warm_n: n, warm_samples: samples,
+    })
+    // Roll finished days up / drop old raw rows: about once per 500 warm-ups.
+    if (Math.random() < 1 / 500) await compactApiStats(supabase)
   })
 
   return NextResponse.json({ ok: true, n }, { status: 202, headers: { 'Cache-Control': 'no-store' } })
