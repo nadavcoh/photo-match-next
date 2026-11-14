@@ -64,7 +64,7 @@ src/app/api/version/route.ts  ← GET: git SHA / Vercel commit SHA, for Settings
 src/app/api/warm/route.ts     ← POST: runs warm_match_index() after the response (202) so the
                                  database connection behind the next real search is warm;
                                  also records a stats row (and now and then compacts stats)
-src/app/WarmUp.tsx            ← Client: pings /api/warm (n=1) every 15 s while the page is
+src/app/WarmUp.tsx            ← Client: pings /api/warm (n=2) every 15 s while the page is
                                  visible, never while a /api/match request is in flight
 src/lib/inflight.ts           ← Counts in-flight /api/match requests (used by WarmUp)
 src/lib/stats.ts              ← Long-term statistics: recordApiStat() / compactApiStats()
@@ -650,7 +650,7 @@ Things to remember:
   database connection is slow on its first searches (1-2 s each) and speeds up
   to about 25 ms after a few dozen random searches; the warmth belongs to the
   connection, not the database. `WarmUp` (mounted in `layout.tsx`) pings
-  `/api/warm?n=1` every 15 s while the page is visible, when it loads and when it
+  `/api/warm?n=2` every 15 s while the page is visible, when it loads and when it
   becomes visible again. The ping is skipped while an `/api/match` request is in
   flight (`apiFetch` in `page.tsx` counts them via `src/lib/inflight.ts`) and runs
   in the next gap (400 ms after the last request finishes). The mechanism is
