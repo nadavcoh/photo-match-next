@@ -68,6 +68,13 @@ src/app/WarmUp.tsx            ← Client: pings /api/warm (n=1) every 15 s while
                                  visible, never while a /api/match request is in flight
 src/lib/inflight.ts           ← Counts in-flight /api/match requests (used by WarmUp)
 src/lib/stats.ts              ← Long-term statistics: recordApiStat() / compactApiStats()
+src/lib/hashIndex.ts          ← In-memory exact Hamming search over the hashes of `hashes` and
+                                 `partner` (MATCH_ENGINE=memory|compare); see "In-memory matching"
+supabase/migrations/20261114130000_hash_index_export.sql
+                               ← export_hash_index(), get_hashes_rows(), get_partner_rows(),
+                                 api_stats.engine
+scripts/hash_index_parity/    ← Parity test: in-memory engine vs the SQL functions ('exact') on a
+                                 local Postgres + pgvector (not a project dependency; see its README)
 
 src/lib/types.ts              ← All shared request/response shapes
 src/lib/thumbnails.ts         ← Deterministic e2 object-key builder for small JPEG
@@ -673,3 +680,39 @@ Things to remember:
 - **Same rule as every other migration:** `20261114120000_api_stats.sql` is applied
   by the Supabase GitHub integration, not through the connector. Reading the stats
   with queries from `sql/stats/report.sql` is fine through the connector.
+
+## In-memory matching (MATCH_ENGINE)
+
+- **Why.** The warm-up experiments (n=1 / n=2, 4 s / 5.5 s budgets) did not change the
+  cold-connection problem: about a quarter of fast image searches still took over 1 s and
+  wide video searches hit the 8 s statement timeout. The tables are small (about 154,000
+  `hashes` rows and 87,000 `partner` rows, a few MB of 64-bit hashes), so the search can run
+  in the function's memory instead.
+- **What it does.** `src/lib/hashIndex.ts` loads the hashes (and video-thumb hashes) with
+  `export_hash_index()` in 40,000-row chunks (about 75 ms to parse, about 5 MB), then answers
+  every search with an exact Hamming scan (about 1.5 ms for both tables). Only the display
+  columns of the matching rows are read from the database (`get_hashes_rows()` /
+  `get_partner_rows()`, primary-key lookups). The scan reproduces the `'exact'` mode of the
+  `match_*` functions: every row within the threshold, closest first, at most 50. So `mode` is
+  ignored; 'wide' and 'exact' return the same as 'fast'.
+- **Fallback.** A fresh function instance has no index yet: it answers from the database and
+  loads the index after the response (`after()`); `/api/warm` loads it too and skips the HNSW
+  warm-up once it is ready. Any problem (index not loaded, unparsable hash, `get_*_rows`
+  error) falls back to the `match_*` functions for that request.
+- **Upkeep.** New rows (id above the highest loaded) are appended every 30 s; the whole index is
+  rebuilt every 30 minutes so deleted or changed rows, and ids committed out of order, are
+  picked up. A row added in the last 30 s may be missed by the in-memory search.
+- **Switching.** `MATCH_ENGINE` environment variable: `db` (default), `memory`, or `compare`
+  (answers like `memory` and, after the response, runs the database in `'exact'` mode and logs
+  `[match-compare] ok` or `[match-compare] MISMATCH ...`). `?engine=db|memory|compare` on
+  `/api/match` overrides it for one request. Recommended rollout: set `compare`, click through
+  a few dozen items, check the logs have no MISMATCH, then set `memory`.
+- **Statistics.** `/api/match` log lines now carry `engine=db|memory` and `api_stats.engine`
+  records it per request, so the two can be compared (`sql/stats/report.sql`; the daily rollup
+  does not split by engine, use the raw rows, kept 30 days).
+- **Parity test.** `scripts/hash_index_parity/` runs the engine against the real SQL functions
+  on a local Postgres 16 with pgvector 0.8 (synthetic clustered hashes, 4,000 checks over image
+  and video searches in both tables, multi-chunk loading and the delta update). Result on
+  2026-11-14: 4,007 checks, 0 failures.
+- **Not covered.** The `count` and `item` queries on `wa` (50 to 700 ms when cold) and the e2
+  downloads are unchanged; only the candidate search (`rpc` in the log line) moves into memory.
