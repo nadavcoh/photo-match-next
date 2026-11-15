@@ -46,6 +46,33 @@ where route = 'warm'
 order by day desc
 limit 30;
 
--- 5. Roll up finished days and apply retention by hand (the app also does this
+-- 5. Search engines side by side (raw rows, 30 days): in-memory vs database.
+--    engine = 'db' rows include the fallbacks a fresh function instance answers
+--    from the database before its index is loaded.
+select engine, mode, coalesce(is_video, false) as video, count(*) as n,
+       round(percentile_cont(0.5) within group (order by rpc_ms)) as rpc_p50,
+       round(percentile_cont(0.9) within group (order by rpc_ms)) as rpc_p90,
+       max(rpc_ms) as rpc_max,
+       count(*) filter (where not ok) as failed
+from public.api_stats
+where route = 'match' and engine is not null
+group by 1, 2, 3
+order by 1, 2, 3;
+
+-- 6. MATCH_ENGINE=compare verdicts (public.api_compare, 30 days). Anything but
+--    'match' deserves a look; index_age_s is seconds since the in-memory index last
+--    fetched new rows (a row added in the last 30 s can legitimately be missed).
+select result, count(*) as n, min(ts) as first_ts, max(ts) as last_ts
+from public.api_compare
+group by 1
+order by 1;
+
+select ts, wa_id, is_video, result, hashes, partner, index_hashes, index_partner, index_age_s, detail
+from public.api_compare
+where result <> 'match'
+order by ts desc
+limit 50;
+
+-- 7. Roll up finished days and apply retention by hand (the app also does this
 --    about once per 500 warm-ups).
 -- select public.compact_api_stats();

@@ -73,6 +73,9 @@ src/lib/hashIndex.ts          ← In-memory exact Hamming search over the hashes
 supabase/migrations/20261114130000_hash_index_export.sql
                                ← export_hash_index(), get_hashes_rows(), get_partner_rows(),
                                  api_stats.engine
+supabase/migrations/20261115120000_api_compare.sql
+                               ← api_compare (verdicts of MATCH_ENGINE=compare) and its retention
+                                 in compact_api_stats()
 scripts/hash_index_parity/    ← Parity test: in-memory engine vs the SQL functions ('exact') on a
                                  local Postgres + pgvector (not a project dependency; see its README)
 
@@ -704,7 +707,9 @@ Things to remember:
   picked up. A row added in the last 30 s may be missed by the in-memory search.
 - **Switching.** `MATCH_ENGINE` environment variable: `db` (default), `memory`, or `compare`
   (answers like `memory` and, after the response, runs the database in `'exact'` mode and logs
-  `[match-compare] ok` or `[match-compare] MISMATCH ...`). `?engine=db|memory|compare` on
+  `[match-compare] ok` or `[match-compare] MISMATCH ...`, and stores the verdict in
+  `public.api_compare`: `result` match / mismatch / error, row counts, the index size and age,
+  and the first differences; kept 30 days, queries in `sql/stats/report.sql`). `?engine=db|memory|compare` on
   `/api/match` overrides it for one request. Recommended rollout: set `compare`, click through
   a few dozen items, check the logs have no MISMATCH, then set `memory`.
 - **Statistics.** `/api/match` log lines now carry `engine=db|memory` and `api_stats.engine`
