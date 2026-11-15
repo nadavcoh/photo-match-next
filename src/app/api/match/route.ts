@@ -18,8 +18,8 @@ import { createClient } from '@/lib/supabase-server'
 import { thumbnailUrl } from '@/lib/thumbnails'
 import { downloadThumbnailBytes, presignThumbnailUrl } from '@/lib/e2'
 import { pixelDistance, pixelDistanceFallback } from '@/lib/pixelDistance'
-import { recordApiStat } from '@/lib/stats'
-import { getIndex, maintainIndex, parseBits64, searchImage, searchVideo } from '@/lib/hashIndex'
+import { recordApiCompare, recordApiStat } from '@/lib/stats'
+import { getIndex, indexInfo, maintainIndex, parseBits64, searchImage, searchVideo } from '@/lib/hashIndex'
 import type { WAItem, HashCandidate, PartnerCandidate, MatchResponse, SearchMode } from '@/lib/types'
 
 // ── Config ─────────────────────────────────────────────────────────────────────
@@ -406,8 +406,9 @@ function computeAutoSelect(
 // ── Route handler ──────────────────────────────────────────────────────────────
 
 /**
- * 'compare' engine: runs the database in exact mode and logs whether it returns the
- * same rows, in the same order, with the same distances as the in-memory scan.
+ * 'compare' engine: runs the database in exact mode and checks that it returns the
+ * same rows, in the same order, with the same distances as the in-memory scan. The
+ * verdict is logged ([match-compare]) and stored in public.api_compare (kept 30 days).
  */
 async function compareWithDatabase(
   supabase: SupabaseClient,
@@ -417,6 +418,16 @@ async function compareWithDatabase(
   memHashes: HashCandidate[],
   memPartner: PartnerCandidate[],
 ): Promise<void> {
+  const info = indexInfo()
+  const base = {
+    wa_id: waItem.id,
+    is_video: isVideo,
+    hashes: memHashes.length,
+    partner: memPartner.length,
+    index_hashes: info?.hashes ?? null,
+    index_partner: info?.partner ?? null,
+    index_age_s: info?.ageSeconds ?? null,
+  }
   try {
     const dbCtx: EngineCtx = { memory: false }
     const [dbHashes, dbPartner] = await Promise.all([
@@ -429,16 +440,20 @@ async function compareWithDatabase(
       const a = mem.map(key)
       const b = db.map(key)
       if (a.length === b.length && a.every((k, i) => k === b[i])) return null
-      return `${label}: memory=[${a.slice(0, 8).join(' ')}]${a.length > 8 ? '…' : ''} db=[${b.slice(0, 8).join(' ')}]${b.length > 8 ? '…' : ''}`
+      return `${label}: memory(${a.length})=[${a.slice(0, 8).join(' ')}]${a.length > 8 ? '…' : ''} db(${b.length})=[${b.slice(0, 8).join(' ')}]${b.length > 8 ? '…' : ''}`
     }
     const problems = [diff('hashes', memHashes, dbHashes), diff('partner', memPartner, dbPartner)].filter(Boolean)
     if (problems.length === 0) {
       console.log(`[match-compare] ok wa=${waItem.id} video=${isVideo} hashes=${memHashes.length} partner=${memPartner.length}`)
+      await recordApiCompare(supabase, { ...base, result: 'match' })
     } else {
       console.error(`[match-compare] MISMATCH wa=${waItem.id} video=${isVideo} ${problems.join(' | ')}`)
+      await recordApiCompare(supabase, { ...base, result: 'mismatch', detail: problems.join(' | ') })
     }
   } catch (e) {
-    console.error('[match-compare] failed:', e instanceof Error ? e.message : e)
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[match-compare] failed:', message)
+    await recordApiCompare(supabase, { ...base, result: 'error', detail: message })
   }
 }
 

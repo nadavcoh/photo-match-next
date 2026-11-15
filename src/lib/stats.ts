@@ -40,6 +40,28 @@ export async function recordApiStat(supabase: SupabaseClient, stat: ApiStat): Pr
   }
 }
 
+/** One row per 'compare' request in public.api_compare (see compareWithDatabase in the match route). */
+export interface ApiCompare {
+  wa_id: number | null
+  is_video: boolean
+  result: 'match' | 'mismatch' | 'error'
+  hashes?: number | null
+  partner?: number | null
+  index_hashes?: number | null
+  index_partner?: number | null
+  index_age_s?: number | null
+  detail?: string | null
+}
+
+export async function recordApiCompare(supabase: SupabaseClient, row: ApiCompare): Promise<void> {
+  try {
+    const { error } = await supabase.from('api_compare').insert({ ...row, detail: row.detail ? row.detail.slice(0, 1000) : null })
+    if (error) console.error('[stats] compare insert failed:', error.message)
+  } catch (e) {
+    console.error('[stats] compare insert threw:', e instanceof Error ? e.message : e)
+  }
+}
+
 /**
  * Rolls finished days up into api_stats_daily and deletes raw rows past their
  * retention (compact_api_stats). Idempotent and cheap; called now and then.

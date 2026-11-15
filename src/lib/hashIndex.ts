@@ -202,6 +202,13 @@ export function indexSize(): { hashes: number; partner: number } | null {
   return state ? { hashes: state.hashes.length, partner: state.partner.length } : null
 }
 
+/** Rows per table and seconds since the last update (new rows are fetched every DELTA_MS), for diagnostics. */
+export function indexInfo(): { hashes: number; partner: number; ageSeconds: number } | null {
+  return state
+    ? { hashes: state.hashes.length, partner: state.partner.length, ageSeconds: Math.round((Date.now() - state.deltaAt) / 1000) }
+    : null
+}
+
 async function fetchInto(supabase: SupabaseClient, name: IndexTable, table: HashTable): Promise<number> {
   let added = 0
   for (;;) {
