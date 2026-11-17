@@ -119,6 +119,14 @@ export interface MatchResponse {
   auto_select_id: number | null
   /** The mode these candidates came from. Omitted by older responses = 'fast'. */
   search_mode?: SearchMode
+  /**
+   * Which engine answered: 'memory' (exact scan over the in-memory hash index, so
+   * 'wide' / 'exact' searches have nothing to add) or 'db' (the match_* SQL
+   * functions). Omitted by older responses.
+   */
+  engine?: 'db' | 'memory'
+  /** Why that engine answered, short, for display. */
+  engine_reason?: string
 }
 
 export interface CommitRequest {

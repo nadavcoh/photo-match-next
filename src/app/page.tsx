@@ -922,6 +922,7 @@ export default function Home(): JSX.Element {
   const itemIsVideo = (item?.filetype ?? '').toLowerCase().includes('video')
   const searchMode: SearchMode = data?.search_mode ?? 'fast'
   const modeBadge = SEARCH_MODE_BADGE[searchMode]
+  const inMemory = data?.engine === 'memory'
 
   return (
     <>
@@ -1024,23 +1025,36 @@ export default function Home(): JSX.Element {
                 ? ` + ${data.partner_candidates.length} partner` : ''}
             </SectionTitle>
 
-            {/* Escalate: re-search this item deeper (fast → wide → exact) */}
+            {/* Escalate: re-search this item deeper (fast → wide → exact). Hidden when the
+                in-memory engine answered: its scan is already exact, so there is nothing wider. */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-              <Btn
-                variant={searchMode === 'exact' ? 'ghost' : 'blue'}
-                onClick={() => void doEscalate()}
-                disabled={searchMode === 'exact' || escalating}
-                loading={escalating}
-              >
-                {ESCALATE_LABEL[searchMode]}
-              </Btn>
-              {modeBadge && <SmallBadge>{modeBadge}</SmallBadge>}
+              {!inMemory && (
+                <Btn
+                  variant={searchMode === 'exact' ? 'ghost' : 'blue'}
+                  onClick={() => void doEscalate()}
+                  disabled={searchMode === 'exact' || escalating}
+                  loading={escalating}
+                >
+                  {ESCALATE_LABEL[searchMode]}
+                </Btn>
+              )}
+              {modeBadge && !inMemory && <SmallBadge>{modeBadge}</SmallBadge>}
+              {data?.engine && (
+                <>
+                  <SmallBadge variant={inMemory ? 'good' : 'ok'}>
+                    {inMemory ? '⚡ memory · exact' : '🗄 database'}
+                  </SmallBadge>
+                  {data.engine_reason && (
+                    <span style={{ fontSize: '.62rem', color: 'var(--muted)' }}>{data.engine_reason}</span>
+                  )}
+                </>
+              )}
             </div>
 
             {allCandidates.length === 0 ? (
               <div style={{ textAlign: 'center', padding: 30, color: 'var(--muted)', fontSize: '.85rem' }}>
                 No candidates found within threshold.
-                {searchMode !== 'exact' && ' Try searching wider.'}
+                {searchMode !== 'exact' && !inMemory && ' Try searching wider.'}
               </div>
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10, marginBottom: 16 }}>
