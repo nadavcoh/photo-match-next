@@ -697,7 +697,12 @@ Things to remember:
   columns of the matching rows are read from the database (`get_hashes_rows()` /
   `get_partner_rows()`, primary-key lookups). The scan reproduces the `'exact'` mode of the
   `match_*` functions: every row within the threshold, closest first, at most 50. So `mode` is
-  ignored; 'wide' and 'exact' return the same as 'fast'.
+  ignored; 'wide' and 'exact' return the same as 'fast'. The `/api/match` response carries
+  `engine` (`memory` or `db`) and `engine_reason`, and reports `search_mode: 'exact'` when memory
+  answered. The page shows a tag with the engine and the reason (for example "in-memory index:
+  153,815 + 86,676 rows, updated 12 s ago", or "fallback: index not loaded yet") and hides the
+  "Search wider" button when memory answered; when the database answered (not configured, fresh
+  instance, any fallback) the button stays, because fast / wide / exact differ there.
 - **Fallback.** A fresh function instance has no index yet: it answers from the database and
   loads the index after the response (`after()`); `/api/warm` loads it too and skips the HNSW
   warm-up once it is ready. Any problem (index not loaded, unparsable hash, `get_*_rows`
