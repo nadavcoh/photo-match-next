@@ -9,7 +9,7 @@
 --    partner) so that PostgREST enforces access control using the caller's JWT.
 -- 2. Creates RLS policies granting full CRUD to any authenticated user.
 --    (The auth.users trigger from the previous migration ensures only
---    <owner-email> can ever become an authenticated user, so "any
+--    the owner's GitHub account (id 29537286) can ever become an authenticated user, so "any
 --    authenticated user" effectively means "only me".)
 -- 3. Creates a storage.objects policy so the authenticated browser client can
 --    generate signed URLs and the server-side client can download bytes for
