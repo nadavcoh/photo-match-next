@@ -163,17 +163,23 @@ sql/hnsw_recall_tests.sql     ← Recall/latency/behaviour checks for the match_
 
 ## Auth model
 
-Single allowed user, hardcoded email `<owner-email>` in **three** places
+Single allowed user, identified by their GitHub user id (`29537286`), in **three** places
 that all need to stay in sync if it ever changes:
-- `src/middleware.ts` (`ALLOWED_EMAIL`) — blocks every request
-- `supabase-auth-setup.txt` — DB trigger blocks the email from ever signing up
+- `src/middleware.ts` (`ALLOWED_GITHUB_ID`) — blocks every request unless the
+  user has a GitHub identity with that id (checked on `user.identities`, which
+  the auth server sets; `user_metadata` is user-editable and not used)
+- `public.restrict_signup` — the Supabase Auth "Before User Created" hook; lets a
+  sign-up through only if `app_metadata.provider` is `github` and the GitHub id
+  matches (migration `20261117130000_restrict_signup_by_github_id.sql`)
+- RLS policies compare `auth.uid()` with the owner's Supabase user id (migration
+  `20261117120000_owner_policies_by_user_id.sql`)
 - (the GitHub OAuth app itself has no allowlist — anyone can attempt sign-in,
-  middleware + DB trigger are what actually gate access)
+  middleware + the sign-up hook are what actually gate access)
 
 No service-role key is used anywhere (by design — see git history /
 code comments about its removal). All DB and Storage access goes through
-the authenticated user's JWT. RLS limits every table to the owner's email
-(`auth.jwt() ->> 'email'`), see migration
+the authenticated user's JWT. RLS limits every table to the owner's user id
+(`auth.uid()`), see migration
 `20261110120000_restrict_rls_to_owner.sql`: `authenticated` gets SELECT on
 `hashes`, `partner`, `wa` and the lookup tables, and UPDATE on `wa` (the
 commit / skip / undo routes), nothing else. There are no INSERT/DELETE
@@ -572,7 +578,8 @@ next three (cause not established — don't read much into a single slow call).
 
 ## Things to double check before assuming they're still true
 
-- The hardcoded allowed email (`<owner-email>`) in `middleware.ts` —
+- The hardcoded owner GitHub id (`ALLOWED_GITHUB_ID` in `middleware.ts`, also in
+  `public.restrict_signup`) —
   confirm it's still current before changing auth behavior.
 - `HAMMING_THRESHOLD` env var (default `10` if unset) governs match
   sensitivity in `/api/match` — ask before changing the default. Changing it
