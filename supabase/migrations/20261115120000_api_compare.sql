@@ -40,17 +40,17 @@ alter table public.api_compare enable row level security;
 drop policy if exists "owner can read api_compare" on public.api_compare;
 create policy "owner can read api_compare" on public.api_compare
   for select to authenticated
-  using (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  using ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 drop policy if exists "owner can insert api_compare" on public.api_compare;
 create policy "owner can insert api_compare" on public.api_compare
   for insert to authenticated
-  with check (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  with check ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 drop policy if exists "owner can delete api_compare" on public.api_compare;
 create policy "owner can delete api_compare" on public.api_compare
   for delete to authenticated
-  using (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  using ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 revoke all on public.api_compare from anon, authenticated;
 grant select, insert, delete on public.api_compare to authenticated;
