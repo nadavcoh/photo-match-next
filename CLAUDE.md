@@ -89,14 +89,14 @@ src/lib/b2.ts                 ← Backblaze B2 (S3-compatible) signed-URL helper
                                  full-size original media (NOT thumbnails)
 src/lib/supabase-client.ts    ← Browser Supabase client (anon key)
 src/lib/supabase-server.ts    ← Server Supabase client (SSR cookies, Route Handlers)
-src/middleware.ts             ← Supabase session auth + hardcoded email allowlist
+src/middleware.ts             ← Supabase session auth + owner check by GitHub user id
 
-src/app/login/page.tsx        ← "Sign in with GitHub" button
+src/app/login/page.tsx        ← "Sign in with GitHub" button (passes prompt=select_account)
 src/app/auth/callback/route.ts← OAuth code → session exchange
 
-supabase-rls-and-rpc.sql      ← RLS policies + the 4 match_*_image/video() RPCs
+supabase-rls-and-rpc.sql      ← owner-only RLS policies (safe to re-run) + the 4 match_*_image/video() RPCs
                                  (each with a p_mode: fast | wide | exact)
-supabase-auth-setup.txt       ← DB trigger restricting auth.users to one email
+supabase-auth-setup.txt       ← optional extra trigger (not installed) restricting auth.users to the owner's GitHub id
 supabase/config.toml          ← Standard `supabase init` output; makes the repo usable by
                                  the Supabase CLI / GitHub integration
 supabase/migrations/20261031120000_search_modes_for_match_functions.sql
@@ -175,6 +175,10 @@ that all need to stay in sync if it ever changes:
   `20261117120000_owner_policies_by_user_id.sql`)
 - (the GitHub OAuth app itself has no allowlist — anyone can attempt sign-in,
   middleware + the sign-up hook are what actually gate access)
+
+The login button calls `signInWithOAuth` with `queryParams: { prompt: 'select_account' }`,
+so GitHub shows its account chooser instead of silently reusing the signed-in account
+(this is how you switch accounts in the iOS PWA). Keep it when changing the sign-in code.
 
 No service-role key is used anywhere (by design — see git history /
 code comments about its removal). All DB and Storage access goes through
@@ -272,14 +276,15 @@ E2_BUCKET               # optional, default "thumbnails"
 E2_PATH_STYLE           # optional, default path-style; "false" = virtual-hosted
 ```
 
-**Status (2026-11-08).** The cutover is done: all 253,779 thumbnails were
-backfilled to e2 (verified: 0 missing, 0 size mismatches), the app (commit
-`382d3c3`) serves them from e2 and the phash scrapers upload there. Supabase
-Storage still holds its old copy as the rollback. Removing it with
-`cleanup.py` (no way back) and then running `VACUUM FULL storage.objects` is
-still pending; until then the database stays at ~397 MB (about 170 MB
-afterwards — an estimate, confirm the real number). The 4 orphans were
-downloaded on 2026-11-10; cleanup waits for a few more days of normal use.
+**Status (2026-11-17).** Done. The cutover happened on 2026-11-08: all 253,779
+thumbnails were backfilled to e2 (verified: 0 missing, 0 size mismatches) and
+the app and the phash scrapers use e2. On 2026-11-17 `cleanup.py --yes` deleted
+all 253,783 objects from Supabase Storage (the 253,779 thumbnails plus 4 orphans
+that were saved locally first), and `VACUUM FULL storage.objects` took that
+table from 112 MB to 88 kB and the database from 399 MB to 183 MB. The Storage
+bucket has since been deleted and `storage.objects` has no policies left. There
+is no Supabase copy to roll back to any more: e2 holds the only copy. (e2 then
+had 254,290 objects: the 253,779 plus 511 written there by the scrapers.)
 
 **Setup gotchas**
 - `E2_ENDPOINT` is the bare regional endpoint (`https://s3.<region>.idrivee2.com`),
@@ -595,6 +600,10 @@ next three (cause not established — don't read much into a single slow call).
 
 - Don't deliver changes as a `tar.gz` (owner preference, 2026-11-10); present
   files individually, or push when asked.
+- The git history of this repo was rewritten on 2026-11-17 (author e-mail addresses
+  and file text). Every commit SHA from before that date changed, so SHAs quoted in
+  old notes or chats no longer exist; local clones need
+  `git fetch origin && git reset --hard origin/master`.
 - Schema/function changes go in `supabase/migrations/<YYYYMMDDHHMMSS>_name.sql`:
   plain SQL, idempotent, no `psql` meta-commands (`\set`, `\gexec`, …), and
   keep `supabase-rls-and-rpc.sql` in sync for fresh installs. Never edit a
@@ -634,8 +643,8 @@ Things to remember:
   small. The big remaining item was moving thumbnails out of Supabase Storage
   (`storage.objects`: 253k rows, 226 MB including indexes, 898 MB of files):
   the move to IDrive e2 is done as of 2026-11-08 (see "Thumbnails: IDrive
-  e2"), but the Supabase copy has not been deleted yet, so the database is
-  still ~397 MB — update this note after `cleanup.py` and the `VACUUM FULL`.
+  e2"), and the Supabase copy was deleted and vacuumed on 2026-11-17: the
+  database is now 183 MB (from 399 MB).
   After the rebuild,
   Part 1 of `sql/hnsw_recall_tests.sql` showed zero misses for `fast` and
   `wide` against `exact` in all four tests (200 samples each); Parts 2–3 were

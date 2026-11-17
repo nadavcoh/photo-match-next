@@ -5,6 +5,11 @@ Storage. Why: `storage.objects` is 226 MB (table + indexes) of the ~397 MB
 database. App and scraper code for e2 is already written (`src/lib/e2.ts`,
 and `thumb_store.py` in the phash repo); these scripts move the existing data.
 
+**Status: finished on 2026-11-17.** `cleanup.py --yes` deleted all 253,783
+objects (253,779 thumbnails + 4 orphans saved locally), the three `VACUUM FULL`
+calls followed, and the database went from 399 MB to 183 MB. Nothing is left in
+Supabase Storage, so these scripts are kept only as a record.
+
 Key layout is unchanged: `{prefix}/{chunk:06d}/{prefix}_{id}.jpg`.
 
 ## Setup (once)

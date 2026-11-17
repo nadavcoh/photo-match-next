@@ -6,7 +6,7 @@ similarity. Swipe through unmatched items, review ranked candidates, commit
 or skip, undo if needed.
 
 This is a personal, single-user app — not a general-purpose product. Auth is
-locked to one hardcoded email address.
+locked to one GitHub account (identified by its GitHub user id).
 
 ## Stack
 

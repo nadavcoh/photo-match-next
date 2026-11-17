@@ -25,5 +25,6 @@ Between steps 1 and 4 an **old** scraper still works for inserts, but the rows i
 inserts have no `photo_id`; re-run step 2 (idempotent) before step 4. After step
 4 an old scraper fails on insert (by design).
 
-Not removed on purpose: the thumbnails in Storage (`storage.objects` is the
-biggest table) — moving them to B2 is a separate change.
+Not part of this runbook: the thumbnails in Storage (`storage.objects` was the
+biggest table). They were moved to IDrive e2 separately (see
+`scripts/thumbnails_to_e2/`), and Storage was emptied and vacuumed on 2026-11-17.
