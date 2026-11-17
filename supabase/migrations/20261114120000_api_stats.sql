@@ -15,7 +15,7 @@
 -- overwrites an existing day) and then deletes raw rows past their retention.
 -- The app calls it now and then from /api/warm; it can also be run by hand.
 --
--- Access follows the owner-only RLS migration (20261110120000): the owner's user id, The functions run as the caller (SECURITY INVOKER).
+-- Access follows the owner-only RLS migration (20261110120000): the owner's user id, nothing for anon. The functions run as the caller (SECURITY INVOKER).
 
 begin;
 
