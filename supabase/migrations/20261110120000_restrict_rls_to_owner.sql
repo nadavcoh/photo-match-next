@@ -19,7 +19,7 @@ drop policy if exists "allowed account can read hashes" on public.hashes;
 
 create policy "owner can read hashes" on public.hashes
   for select to authenticated
-  using (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  using ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 -- ---- partner --------------------------------------------------------------
 drop policy if exists "authenticated can read partner" on public.partner;
@@ -27,23 +27,23 @@ drop policy if exists "partner_authenticated_select" on public.partner;
 
 create policy "owner can read partner" on public.partner
   for select to authenticated
-  using (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  using ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 -- ---- lookup tables --------------------------------------------------------
 drop policy if exists "camera_names_authenticated_select" on public.camera_names;
 create policy "owner can read camera_names" on public.camera_names
   for select to authenticated
-  using (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  using ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 drop policy if exists "location_names_authenticated_select" on public.location_names;
 create policy "owner can read location_names" on public.location_names
   for select to authenticated
-  using (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  using ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 drop policy if exists "origins_authenticated_select" on public.origins;
 create policy "owner can read origins" on public.origins
   for select to authenticated
-  using (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  using ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 -- ---- wa (read + update, no insert/delete) ---------------------------------
 drop policy if exists "authenticated can read wa" on public.wa;
@@ -52,12 +52,12 @@ drop policy if exists "allowed account can read wa" on public.wa;
 
 create policy "owner can read wa" on public.wa
   for select to authenticated
-  using (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  using ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 create policy "owner can update wa" on public.wa
   for update to authenticated
-  using (lower((select auth.jwt() ->> 'email')) = '<owner-email>')
-  with check (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  using ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid)
+  with check ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 -- ---- privileges RLS does not cover ----------------------------------------
 -- TRUNCATE is not subject to RLS; nothing in the app needs these grants.
