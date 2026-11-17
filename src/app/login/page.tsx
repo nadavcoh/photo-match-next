@@ -75,6 +75,9 @@ function SignInButton() {
         // After GitHub redirects back, /auth/callback exchanges the code for a
         // session and then sends the user to /.
         redirectTo: `${window.location.origin}/auth/callback`,
+        // Ask GitHub to show its account picker instead of silently reusing the
+        // account that is already signed in (stuck sessions in iOS PWAs).
+        queryParams: { prompt: 'select_account' },
       },
     })
   }
