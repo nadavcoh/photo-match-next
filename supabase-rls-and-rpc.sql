@@ -1,20 +1,26 @@
 -- =============================================================================
--- Photo Match — Row Level Security, Storage Policies & RPC Functions
--- Run this entire script once in the Supabase SQL Editor.
+-- Photo Match — Row Level Security, owner-only policies & RPC functions
+-- Run this entire script in the Supabase SQL Editor. It is idempotent and safe
+-- to re-run (for example after a function change): it never re-creates an open
+-- policy, and it removes the old ones if they are still around.
 -- =============================================================================
 --
 -- What this script does
 -- ──────────────────────
--- 1. Enables Row Level Security on the three application tables (wa, hashes,
---    partner) so that PostgREST enforces access control using the caller's JWT.
--- 2. Creates RLS policies granting full CRUD to any authenticated user.
---    (The auth.users trigger from the previous migration ensures only
---    the owner's GitHub account (id 29537286) can ever become an authenticated user, so "any
---    authenticated user" effectively means "only me".)
--- 3. Creates a storage.objects policy so the authenticated browser client can
---    generate signed URLs and the server-side client can download bytes for
---    pixel-distance computation — no service role key required.
--- (Prerequisite for Parts 2b and 4: the normalized-columns migration
+-- 1. Enables Row Level Security on the application tables (wa, hashes,
+--    partner and the lookup tables) so that PostgREST enforces access control
+--    using the caller's JWT.
+-- 2. Drops the old "any authenticated user" policies and creates ONE owner-only
+--    policy per command: auth.uid() must equal the owner's Supabase user id
+--    (SELECT everywhere, UPDATE on wa). INSERT/DELETE happen only through the
+--    scrapers' direct database connection, which does not go through RLS.
+--    This is the same state as supabase/migrations/20261110120000_restrict_rls_to_owner.sql
+--    and 20261117120000_owner_policies_by_user_id.sql; keep them in sync.
+--    The owner id below is specific to this Supabase project: on a fresh project
+--    replace it with the id of your user (select id from auth.users).
+-- 3. Thumbnails now live in IDrive e2, so no storage.objects policy is created
+--    (see Part 3).
+-- (Prerequisite for Parts 2 and 4: the normalized-columns migration
 --  20261103120000_normalize_columns_expand.sql + sql/normalize_columns/1_backfill.sql.)
 -- 4. Creates four PostgreSQL RPC functions for the pgvector <~> similarity
 --    queries, which the Supabase JS client calls via .rpc(). Using SECURITY
@@ -33,67 +39,97 @@ ALTER TABLE public.hashes  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.partner ENABLE ROW LEVEL SECURITY;
 
 
--- ─── PART 2: RLS POLICIES ───────────────────────────────────────────────────────────────────────
+-- ─── PART 2: RLS POLICIES (owner only) ──────────────────────────────────────────────────────
 --
--- Each policy uses TO authenticated so the anon role (unauthenticated) can
--- never access any row. The middleware also enforces auth, so this is a
--- belt-and-suspenders guarantee at the database level.
+-- Policies are PERMISSIVE by default and are OR-ed together, so one
+-- "USING (true)" policy would make every sibling policy irrelevant. The old
+-- open policies are therefore dropped first, then one owner-only policy is
+-- created per command. The anon role gets nothing.
 
--- wa: full CRUD (the app commits, skips, and undos rows)
-DROP POLICY IF EXISTS "wa_authenticated_all" ON public.wa;
-CREATE POLICY "wa_authenticated_all" ON public.wa
-  FOR ALL
-  TO authenticated
-  USING     (true)
-  WITH CHECK (true);
+BEGIN;
 
--- hashes: read-only (the app only queries candidates; it never writes here)
-DROP POLICY IF EXISTS "hashes_authenticated_select" ON public.hashes;
-CREATE POLICY "hashes_authenticated_select" ON public.hashes
-  FOR SELECT
-  TO authenticated
-  USING (true);
+ALTER TABLE public.origins        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.camera_names   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.location_names ENABLE ROW LEVEL SECURITY;
 
--- partner: read-only (same reasoning as hashes)
-DROP POLICY IF EXISTS "partner_authenticated_select" ON public.partner;
-CREATE POLICY "partner_authenticated_select" ON public.partner
-  FOR SELECT
-  TO authenticated
-  USING (true);
+-- Old open policies (this file's earlier versions and the pre-lockdown project).
+DROP POLICY IF EXISTS "authenticated can read hashes"           ON public.hashes;
+DROP POLICY IF EXISTS "hashes_authenticated_select"             ON public.hashes;
+DROP POLICY IF EXISTS "allowed account can read hashes"         ON public.hashes;
+DROP POLICY IF EXISTS "authenticated can read partner"          ON public.partner;
+DROP POLICY IF EXISTS "partner_authenticated_select"            ON public.partner;
+DROP POLICY IF EXISTS "authenticated can read wa"               ON public.wa;
+DROP POLICY IF EXISTS "wa_authenticated_all"                    ON public.wa;
+DROP POLICY IF EXISTS "allowed account can read wa"             ON public.wa;
+DROP POLICY IF EXISTS "origins_authenticated_select"            ON public.origins;
+DROP POLICY IF EXISTS "camera_names_authenticated_select"       ON public.camera_names;
+DROP POLICY IF EXISTS "location_names_authenticated_select"     ON public.location_names;
+
+-- hashes / partner: read-only (the app only queries candidates)
+DROP POLICY IF EXISTS "owner can read hashes" ON public.hashes;
+CREATE POLICY "owner can read hashes" ON public.hashes
+  FOR SELECT TO authenticated
+  USING ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
+
+DROP POLICY IF EXISTS "owner can read partner" ON public.partner;
+CREATE POLICY "owner can read partner" ON public.partner
+  FOR SELECT TO authenticated
+  USING ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 -- origins / camera_names / location_names: small lookup tables created by
 -- supabase/migrations/20261103120000_normalize_columns_expand.sql. The match_*
 -- functions are SECURITY INVOKER and read them, so they need the same
 -- read-only policy. (jpeg_quant_profiles is deliberately NOT exposed.)
-ALTER TABLE public.origins        ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.camera_names   ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.location_names ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "origins_authenticated_select" ON public.origins;
-CREATE POLICY "origins_authenticated_select" ON public.origins
-  FOR SELECT TO authenticated USING (true);
-DROP POLICY IF EXISTS "camera_names_authenticated_select" ON public.camera_names;
-CREATE POLICY "camera_names_authenticated_select" ON public.camera_names
-  FOR SELECT TO authenticated USING (true);
-DROP POLICY IF EXISTS "location_names_authenticated_select" ON public.location_names;
-CREATE POLICY "location_names_authenticated_select" ON public.location_names
-  FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "owner can read origins" ON public.origins;
+CREATE POLICY "owner can read origins" ON public.origins
+  FOR SELECT TO authenticated
+  USING ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
+
+DROP POLICY IF EXISTS "owner can read camera_names" ON public.camera_names;
+CREATE POLICY "owner can read camera_names" ON public.camera_names
+  FOR SELECT TO authenticated
+  USING ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
+
+DROP POLICY IF EXISTS "owner can read location_names" ON public.location_names;
+CREATE POLICY "owner can read location_names" ON public.location_names
+  FOR SELECT TO authenticated
+  USING ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
+
+-- wa: read + update (the app commits, skips and undoes rows); no insert/delete
+DROP POLICY IF EXISTS "owner can read wa" ON public.wa;
+CREATE POLICY "owner can read wa" ON public.wa
+  FOR SELECT TO authenticated
+  USING ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
+
+DROP POLICY IF EXISTS "owner can update wa" ON public.wa;
+CREATE POLICY "owner can update wa" ON public.wa
+  FOR UPDATE TO authenticated
+  USING ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid)
+  WITH CHECK ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
+
+-- Privileges RLS does not cover (TRUNCATE is not subject to RLS), and nothing
+-- for anon: the app never queries as anon.
+REVOKE TRUNCATE, TRIGGER, REFERENCES ON
+  public.hashes, public.partner, public.wa,
+  public.camera_names, public.location_names, public.origins
+FROM authenticated;
+
+REVOKE ALL ON
+  public.hashes, public.partner, public.wa,
+  public.camera_names, public.location_names, public.origins
+FROM anon;
+
+COMMIT;
 
 
--- ─── PART 3: STORAGE POLICY ─────────────────────────────────────────────────────────────────────
+-- ─── PART 3: STORAGE POLICY (removed) ───────────────────────────────────────────────────────
 --
--- Allows authenticated users to:
---   • Download objects (server-side pixel-distance computation in /api/match)
---   • Generate signed URLs (browser-side SignedImage component)
+-- Thumbnails are served from IDrive e2 (presigned URLs from /api/match), so the
+-- app no longer reads storage.objects and no policy is created here. If the old
+-- "thumbnails_authenticated_read" policy is still on the project, remove it from
+-- Dashboard > Storage > Policies, or (as a role that owns storage.objects):
 --
--- Both operations only require SELECT access on storage.objects.
--- No INSERT/UPDATE/DELETE policy is added — the app never writes to storage
--- via the frontend; thumbnails are populated by the external scraping pipeline.
-
-DROP POLICY IF EXISTS "thumbnails_authenticated_read" ON storage.objects;
-CREATE POLICY "thumbnails_authenticated_read" ON storage.objects
-  FOR SELECT
-  TO authenticated
-  USING (bucket_id = 'thumbnails');
+--   DROP POLICY IF EXISTS "thumbnails_authenticated_read" ON storage.objects;
 
 
 -- ─── PART 4: RPC FUNCTIONS ─────────────────────────────────────────────────────────────────

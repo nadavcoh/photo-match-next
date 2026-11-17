@@ -60,9 +60,11 @@ HAMMING_THRESHOLD=10
 
 Run, in order, in the Supabase SQL editor:
 
-1. `supabase-auth-setup.txt` — restricts new Supabase Auth sign-ups to a
-   single allowed email
-2. `supabase-rls-and-rpc.sql` — enables RLS, adds storage policies, and
+1. `supabase-auth-setup.txt` — optional extra trigger that restricts new
+   Supabase Auth sign-ups to the owner's GitHub account (the restriction in
+   use is the `restrict_signup` hook, migration
+   `20261117130000_restrict_signup_by_github_id.sql`)
+2. `supabase-rls-and-rpc.sql` — enables RLS, adds the owner-only policies, and
    creates the four `match_*_image`/`match_*_video` RPC functions used for
    pgvector similarity queries (each takes an optional `p_mode` — see
    [Search modes](#search-modes-and-the-search-wider-button))
@@ -93,7 +95,9 @@ set the Supabase directory to `supabase` and the production branch to
 | `20261103120000_normalize_columns_expand.sql` | Adds the normalized columns (`photo_id`, `lat`/`lon`, `width`/`height`, `*_id`, `quant_profile_id`) and the lookup tables with their RLS policies. Additive; the old columns keep working. See [Normalized columns](#normalized-columns). |
 | `20261103120100_match_functions_read_normalized_columns.sql` | Rewrites the four `match_*` functions to read the normalized columns (and drops the legacy `filesize` output). |
 | `20261106120000_rebuild_big_hnsw_indexes.sql` | Same idempotent function as `...120100`: rebuilds the two big HNSW indexes (`hashes`, `partner`) that were dropped during the normalization, skipping the ones already on `m = 32`. **Slow and write-blocking.** |
-| `20261110120000_restrict_rls_to_owner.sql` | Replaces the overlapping RLS policies with one owner-email policy per command (SELECT on every table, UPDATE on `wa`), revokes `TRUNCATE`/`TRIGGER`/`REFERENCES` from `authenticated` and all access to those tables from `anon`, and pins `restrict_signup`'s `search_path`. Supersedes the policies in `supabase-rls-and-rpc.sql`: apply it after that file on a fresh database. Quick. |
+| `20261110120000_restrict_rls_to_owner.sql` | Replaces the overlapping RLS policies with one owner-only policy per command (SELECT on every table, UPDATE on `wa`), revokes `TRUNCATE`/`TRIGGER`/`REFERENCES` from `authenticated` and all access to those tables from `anon`, and pins `restrict_signup`'s `search_path`. `supabase-rls-and-rpc.sql` now creates the same policies, so re-running that file is safe. Quick. |
+| `20261117120000_owner_policies_by_user_id.sql` | Recreates every owner policy (including `api_stats`, `api_stats_daily`, `api_compare`) as `auth.uid() = <owner user id>` instead of comparing the JWT email. Quick. |
+| `20261117130000_restrict_signup_by_github_id.sql` | `public.restrict_signup` (Auth "Before User Created" hook) now lets a sign-up through only for GitHub user id `29537286`. Quick. |
 
 **Before the integration first applies these to production**, run the second
 one by hand so it has nothing left to build (the integration then just

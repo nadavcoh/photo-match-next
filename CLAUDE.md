@@ -117,13 +117,13 @@ supabase/migrations/20261106120000_rebuild_big_hnsw_indexes.sql
                                  rebuilds the two big HNSW indexes dropped for the
                                  normalized-columns work (the other two are skipped).
 supabase/migrations/20261110120000_restrict_rls_to_owner.sql
-                               ← Replaces every overlapping RLS policy with one owner-email
+                               ← Replaces every overlapping RLS policy with one owner-only
                                  policy per command (SELECT on all tables, UPDATE on `wa`),
                                  revokes TRUNCATE/TRIGGER/REFERENCES from `authenticated` and
                                  all table access from `anon`, pins `restrict_signup`'s
-                                 search_path. Supersedes the policy part of
-                                 supabase-rls-and-rpc.sql — re-apply this migration after
-                                 running that file on a fresh database.
+                                 search_path. supabase-rls-and-rpc.sql now creates the
+                                 same owner-only policies (by user id), so re-running that
+                                 file is safe.
 supabase/migrations/20261103120000_normalize_columns_expand.sql
                                ← DDL for the normalized columns (lookup tables, new
                                  columns, URL builders) — see "Normalized columns".
