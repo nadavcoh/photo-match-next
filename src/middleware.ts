@@ -6,9 +6,9 @@
  * Rules:
  *  1. Public paths (/login, /auth/callback, static assets) pass through freely.
  *  2. All other routes require an active Supabase session.
- *  3. Even if a session exists, the authenticated user's email MUST be exactly
- *     ALLOWED_EMAIL (case-insensitive). Any other account is signed out and
- *     bounced to /login immediately.
+ *  3. Even if a session exists, the authenticated user MUST have a GitHub
+ *     identity whose id is exactly ALLOWED_GITHUB_ID. Any other account is
+ *     signed out and bounced to /login immediately.
  *
  * The createServerClient call here is intentional — middleware runs on the
  * Edge Runtime and must use request/response cookies directly rather than
@@ -21,7 +21,10 @@ import { createServerClient } from '@supabase/ssr'
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
-const ALLOWED_EMAIL = '<owner-email>'
+// GitHub user id (numeric, never changes) of the app owner. Taken from the
+// user's identities, which the auth server sets; user_metadata can be edited by
+// the user and is not used here.
+const ALLOWED_GITHUB_ID = '29537286'
 
 /** Paths that must never require authentication. */
 const PUBLIC_PREFIXES = ['/login', '/auth/callback']
@@ -92,8 +95,11 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl)
   }
 
-  // ── Authenticated but wrong email → destroy session + redirect ─────────────
-  if (user.email?.toLowerCase() !== ALLOWED_EMAIL.toLowerCase()) {
+  // ── Authenticated but not the owner's GitHub account → destroy session ────
+  const isOwner = (user.identities ?? []).some(
+    (identity) => identity.provider === 'github' && String(identity.id) === ALLOWED_GITHUB_ID
+  )
+  if (!isOwner) {
     // Revoke the session server-side so the token cannot be reused.
     await supabase.auth.signOut()
 
