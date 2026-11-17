@@ -1,20 +1,21 @@
 -- =============================================================================
--- Supabase Auth – user creation restriction
--- Run this entire script in the Supabase SQL Editor (Dashboard → SQL Editor).
+-- Supabase Auth – user creation restriction (optional extra safety net)
 -- =============================================================================
 --
--- What this does
--- ──────────────
--- Creates a BEFORE INSERT trigger on auth.users that raises an exception
--- (and therefore rolls back the insert) if the new user's email is anything
--- other than <owner-email>.
+-- The restriction that is actually in use is the "Before User Created" auth hook
+-- public.restrict_signup (supabase/migrations/20261117130000_restrict_signup_by_github_id.sql)
+-- plus the middleware check (src/middleware.ts). This script is NOT installed on
+-- the project; it is a second, independent layer you can add in the SQL Editor.
 --
--- This is a database-level safety net that works even if the middleware or
--- Supabase Auth settings are ever misconfigured — no unwanted account can
--- be persisted in the database at all.
+-- What it does
+-- ────────────
+-- Creates a BEFORE INSERT trigger on auth.users that raises an exception (and
+-- therefore rolls back the insert) unless the new user signed up with GitHub and
+-- the GitHub user id is the owner's (29537286).
 --
--- Note: Supabase stores emails in lowercase internally, so the comparison
--- uses LOWER() on both sides for safety.
+-- raw_app_meta_data->>'provider' is set by the auth server. The GitHub id is read
+-- from raw_user_meta_data->>'provider_id', which GitHub sign-ups carry; the
+-- provider check is what stops an email sign-up from simply claiming that id.
 -- =============================================================================
 
 
@@ -27,11 +28,9 @@ SECURITY DEFINER
 SET search_path = auth   -- pin search_path to prevent search-path-hijacking
 AS $$
 BEGIN
-  IF LOWER(NEW.email) <> LOWER('<owner-email>') THEN
-    RAISE EXCEPTION
-      'Registration is not permitted for the email address "%". '
-      'This application is private.',
-      NEW.email;
+  IF NEW.raw_app_meta_data ->> 'provider' IS DISTINCT FROM 'github'
+     OR NEW.raw_user_meta_data ->> 'provider_id' IS DISTINCT FROM '29537286' THEN
+    RAISE EXCEPTION 'Registration is not permitted. This application is private.';
   END IF;
 
   RETURN NEW;  -- allow the insert to proceed
@@ -48,26 +47,6 @@ CREATE TRIGGER restrict_user_creation_trigger
   BEFORE INSERT ON auth.users
   FOR EACH ROW
   EXECUTE FUNCTION auth.restrict_user_creation();
-
-
--- ── 3. Smoke-test (optional – safe to run, rolls back automatically) ──────────
---
--- Uncomment the block below to verify the trigger fires correctly.
--- Both statements should fail with the exception message above;
--- the DO block catches the error so the script itself doesn't abort.
-
-/*
-DO $$
-BEGIN
-  -- Should raise: email is not allowed
-  INSERT INTO auth.users (email) VALUES ('attacker@evil.com');
-  RAISE EXCEPTION 'TEST FAILED: insert should have been rejected';
-EXCEPTION
-  WHEN others THEN
-    RAISE NOTICE 'Trigger correctly rejected attacker@evil.com: %', SQLERRM;
-END;
-$$;
-*/
 
 
 -- ── Done ──────────────────────────────────────────────────────────────────────
