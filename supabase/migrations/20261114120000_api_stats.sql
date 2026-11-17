@@ -15,8 +15,7 @@
 -- overwrites an existing day) and then deletes raw rows past their retention.
 -- The app calls it now and then from /api/warm; it can also be run by hand.
 --
--- Access follows the owner-only RLS migration (20261110120000): the owner's
--- email, nothing for anon. The functions run as the caller (SECURITY INVOKER).
+-- Access follows the owner-only RLS migration (20261110120000): the owner's user id, The functions run as the caller (SECURITY INVOKER).
 
 begin;
 
@@ -69,27 +68,27 @@ alter table public.api_stats_daily enable row level security;
 drop policy if exists "owner can read api_stats" on public.api_stats;
 create policy "owner can read api_stats" on public.api_stats
   for select to authenticated
-  using (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  using ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 drop policy if exists "owner can insert api_stats" on public.api_stats;
 create policy "owner can insert api_stats" on public.api_stats
   for insert to authenticated
-  with check (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  with check ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 drop policy if exists "owner can delete api_stats" on public.api_stats;
 create policy "owner can delete api_stats" on public.api_stats
   for delete to authenticated
-  using (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  using ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 drop policy if exists "owner can read api_stats_daily" on public.api_stats_daily;
 create policy "owner can read api_stats_daily" on public.api_stats_daily
   for select to authenticated
-  using (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  using ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 drop policy if exists "owner can insert api_stats_daily" on public.api_stats_daily;
 create policy "owner can insert api_stats_daily" on public.api_stats_daily
   for insert to authenticated
-  with check (lower((select auth.jwt() ->> 'email')) = '<owner-email>');
+  with check ((select auth.uid()) = 'b0ed7f80-e02c-4759-92ba-b38ce507d82d'::uuid);
 
 -- Exactly the privileges the app needs, nothing else (new tables in public get
 -- broad default grants on Supabase).
