@@ -713,6 +713,14 @@ export default function Home(): JSX.Element {
   const [escalating, setEscalating] = useState(false)
   const { toasts, toast, remove: removeToast } = useToast()
   const cacheRef = useRef<Map<number, { data: MatchResponse; ts: number }>>(new Map())
+  // Bumped whenever the queue changes (commit / skip / undo). Offsets are
+  // positions in the unmatched queue, so every cached entry becomes stale at
+  // that moment, and any prefetch still in flight must not write its result.
+  const cacheGenRef = useRef(0)
+  const invalidateCache = useCallback(() => {
+    cacheRef.current.clear()
+    cacheGenRef.current++
+  }, [])
 
   useEffect(() => {
     if (!panelOpen || version !== null) return
@@ -731,9 +739,10 @@ export default function Home(): JSX.Element {
     const next = offset + 1
     const cached = cacheRef.current.get(next)
     if (cached && Date.now() - cached.ts < CACHE_TTL) return
+    const gen = cacheGenRef.current
     try {
       const data = await apiFetch<MatchResponse>(`/api/match?offset=${next}`)
-      cacheRef.current.set(next, { data, ts: Date.now() })
+      if (gen === cacheGenRef.current) cacheRef.current.set(next, { data, ts: Date.now() })
     } catch { /* silent */ }
   }, [])
 
@@ -827,7 +836,7 @@ export default function Home(): JSX.Element {
         body: JSON.stringify({ wa_id: state.data.item.id, hash_id: effectiveId }),
       })
       setUndoState({ wa_id: state.data.item.id, prev_id_hash: res.prev_id_hash })
-      cacheRef.current.delete(state.offset)
+      invalidateCache()
       toast('✓ Committed!', 'success')
       if (autoAdvance) await loadMatch(state.offset, true)
     } catch (err) {
@@ -870,7 +879,7 @@ export default function Home(): JSX.Element {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ wa_id: state.data.item.id }),
       })
-      cacheRef.current.delete(state.offset)
+      invalidateCache()
       toast('Skipped', 'info')
       await loadMatch(state.offset, true)
     } catch (err) { toast(err instanceof Error ? err.message : 'Skip failed', 'error') }
@@ -886,7 +895,7 @@ export default function Home(): JSX.Element {
         body: JSON.stringify(undoState),
       })
       setUndoState(null)
-      cacheRef.current.clear()
+      invalidateCache()
       toast('↩ Undone', 'info')
       await loadMatch(state.offset, true)
     } catch (err) { toast(err instanceof Error ? err.message : 'Undo failed', 'error') }
