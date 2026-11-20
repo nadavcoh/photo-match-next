@@ -198,6 +198,15 @@ The page works on the list of unmatched `wa` ids, not on queue positions.
   first item.
 - **Not covered.** The queue is read when the page loads and on ↻ / undo, so items
   added by the scrapers appear after ↻.
+- **Cold starts and prefetch.** Right after an idle period the first requests are
+  answered from the database (`engine=db`, `rpc` 4–5 s) until the in-memory index
+  has loaded; the first production logs of this design (2026-11-20) showed about
+  30 s of that, with several prefetches in flight at once and nothing failing.
+  If cold starts ever hit the 8 s statement timeout, prefetch only while the last
+  response came from `engine=memory` (not done yet).
+- **History.** Commit `007784c` first fixed Next showing a stale item by clearing
+  the whole offset-keyed cache; `c030139` replaced that design with the by-id cache
+  described here.
 
 ## Auth model
 
@@ -652,7 +661,14 @@ next three (cause not established — don't read much into a single slow call).
   postgresql://…?sslmode=disable` against a scratch database (this is how the
   HNSW migrations were verified).
 - No test suite exists; verify changes with `npx tsc --noEmit` and
-  `npx next build` rather than assuming.
+  `npx next build` rather than assuming. `next build` needs
+  `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` set (placeholder
+  values are enough to check that it compiles). `next lint` is not usable yet:
+  there is no ESLint config, so it stops at an interactive setup prompt.
+- Pushing to `master` deploys to Vercel production straight away; runtime logs
+  (Vercel MCP or dashboard) are the first place to look afterwards. Hobby keeps
+  only 1 hour of them. `/api/match/queue` logs nothing, so check it through the
+  page or the request log rather than the function logs.
 - Keep the inline-style, single-file-component conventions already in
   `page.tsx` unless explicitly asked to refactor.
 

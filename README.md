@@ -144,6 +144,27 @@ columns"). Anything that inserts rows (the private `phash` scrapers) must write
 `lat`/`lon` and `location_names(value)` directly, so its RLS needs a SELECT
 policy on `location_names`.
 
+## Working through the queue
+
+The page reads the ids of all unmatched items once (`GET /api/match/queue`,
+about 30 KB for a few thousand items) and fetches each item by id
+(`GET /api/match?id=`). Results are cached by id, and the next five items are
+prefetched in the background (two requests at a time), so committing or skipping
+moves to an item that is usually already loaded. Because the cache is keyed by id
+and not by queue position, committing or skipping never makes it stale.
+
+- Counters read "N remaining" and "N of count".
+- The current item's id is kept in the URL (`#wa-<id>`), so a reload reopens it.
+- **Undo** puts the item back in the queue and shows it again.
+- If an item was handled in another tab, it is dropped from the queue
+  automatically.
+- The queue is read on load and on ↻ / undo; items added by the scrapers in the
+  meantime appear after ↻.
+
+Keys: `Enter` or `c` commit, `←`/`p` previous, `→`/`n` next, `r` refresh,
+`e` search wider, `1`–`9` pick a candidate. The design and its limits are in
+[`CLAUDE.md`](./CLAUDE.md) under "Queue, ids and the item cache".
+
 ## Search modes and the "Search wider" button
 
 Candidate search uses HNSW indexes, which are *approximate*: they can miss a
@@ -158,9 +179,9 @@ can be searched at three depths:
 
 Every item opens on `fast`. If the candidates look wrong, press **Search
 wider** (or `e`): the first press re-runs the item at `wide`, the second at
-`exact`. Committing, skipping, undoing, or refreshing (↻) reloads the item at
-`fast`; an escalated result is otherwise kept for the app's usual 30-second
-cache, so stepping back to an item you just escalated shows it as you left it.
+`exact`. Refreshing (↻), or opening an item that isn't cached, searches it at
+`fast`. An escalated result stays in the cache with its item (about 20 minutes),
+so stepping back to an item you just escalated shows it as you left it.
 
 The measurements behind this, and the reasons for each design choice, are in
 [`CLAUDE.md`](./CLAUDE.md) under "HNSW recall and search modes".
@@ -184,7 +205,7 @@ and notes on the Cloudinary → Backblaze B2 migration.
 npm run dev     # start dev server
 npm run build   # production build
 npm run start   # run a production build
-npm run lint    # next lint
+npm run lint    # next lint (no ESLint config exists yet, so it only offers to create one)
 ```
 
 There is no automated test suite. Verify app changes with:
@@ -193,6 +214,9 @@ There is no automated test suite. Verify app changes with:
 npx tsc --noEmit
 npx next build
 ```
+
+`next build` needs `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+to be set; placeholder values are enough to check that the build compiles.
 
 Database-side checks live in `sql/` — see "Checking recall" above.
 
