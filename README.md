@@ -54,6 +54,10 @@ E2_BUCKET=thumbnails    # optional, defaults to "thumbnails"
 
 # Matching sensitivity (optional, default 10)
 HAMMING_THRESHOLD=10
+
+# Search engine (optional, default db): db | memory | compare.
+# See CLAUDE.md, "In-memory matching (MATCH_ENGINE)".
+MATCH_ENGINE=db
 ```
 
 ### Database setup
@@ -96,8 +100,13 @@ set the Supabase directory to `supabase` and the production branch to
 | `20261103120100_match_functions_read_normalized_columns.sql` | Rewrites the four `match_*` functions to read the normalized columns (and drops the legacy `filesize` output). |
 | `20261106120000_rebuild_big_hnsw_indexes.sql` | Same idempotent function as `...120100`: rebuilds the two big HNSW indexes (`hashes`, `partner`) that were dropped during the normalization, skipping the ones already on `m = 32`. **Slow and write-blocking.** |
 | `20261110120000_restrict_rls_to_owner.sql` | Replaces the overlapping RLS policies with one owner-only policy per command (SELECT on every table, UPDATE on `wa`), revokes `TRUNCATE`/`TRIGGER`/`REFERENCES` from `authenticated` and all access to those tables from `anon`, and pins `restrict_signup`'s `search_path`. `supabase-rls-and-rpc.sql` now creates the same policies, so re-running that file is safe. Quick. |
+| `20261113120000_warm_match_index.sql` | `warm_match_index()`: runs a few random searches so a fresh database connection is warm for the next real request (called by `/api/warm`). Quick. |
+| `20261114120000_api_stats.sql` | `api_stats` (raw rows), `api_stats_daily` (rollup) and `compact_api_stats()`, with owner-only RLS. Quick. |
+| `20261114130000_hash_index_export.sql` | `export_hash_index()`, `get_hashes_rows()`, `get_partner_rows()` and `api_stats.engine`, for in-memory matching (`MATCH_ENGINE`). Quick. |
+| `20261115120000_api_compare.sql` | `api_compare` (verdicts of `MATCH_ENGINE=compare`) and its 30-day retention in `compact_api_stats()`. Quick. |
 | `20261117120000_owner_policies_by_user_id.sql` | Recreates every owner policy (including `api_stats`, `api_stats_daily`, `api_compare`) as `auth.uid() = <owner user id>` instead of comparing the JWT email. Quick. |
 | `20261117130000_restrict_signup_by_github_id.sql` | `public.restrict_signup` (Auth "Before User Created" hook) now lets a sign-up through only for GitHub user id `29537286`. Quick. |
+| `20261121120000_raise_authenticated_statement_timeout.sql` | Raises the `authenticated` role's `statement_timeout` from 8 s to 30 s (and reloads PostgREST's config), so slow `match_*` / `export_hash_index` calls can finish. Quick. See [Timeouts and limits](#timeouts-and-limits). |
 
 **Before the integration first applies these to production**, run the second
 one by hand so it has nothing left to build (the integration then just
@@ -183,6 +192,9 @@ wider** (or `e`): the first press re-runs the item at `wide`, the second at
 `fast`. An escalated result stays in the cache with its item (about 20 minutes),
 so stepping back to an item you just escalated shows it as you left it.
 
+The costs above are for a warm database connection; a fresh connection is much
+slower on its first searches (see "Warm-up" in [`CLAUDE.md`](./CLAUDE.md)).
+
 The measurements behind this, and the reasons for each design choice, are in
 [`CLAUDE.md`](./CLAUDE.md) under "HNSW recall and search modes".
 
@@ -193,6 +205,20 @@ items from `wa`. Re-run it when the data has grown by a third or more, after a
 bulk import, after rebuilding an index or upgrading pgvector, or whenever a
 match you know exists isn't offered. (It's plain SQL — works in the SQL editor
 or `psql`.)
+
+## Timeouts and limits
+
+- **Database.** The API routes run as the `authenticated` role, whose
+  `statement_timeout` is 30 s (Supabase's default is 8 s; raised by migration
+  `20261121120000_raise_authenticated_statement_timeout.sql`). `anon` stays at 3 s.
+  It is a role setting because a timeout set inside a function does not extend the
+  call that is already running.
+- **Vercel.** `/api/match` and `/api/warm` export `maxDuration = 60`, the Hobby
+  plan's maximum without Fluid Compute. Routes that set none use the project's
+  default (Project Settings → Functions).
+- If searches still time out, `MATCH_ENGINE=memory` takes the candidate search out
+  of the database. The evidence and the reasoning are in
+  [`CLAUDE.md`](./CLAUDE.md), "Timeouts and function limits".
 
 ## Project structure
 
