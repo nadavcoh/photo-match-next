@@ -726,7 +726,7 @@ export default function Home(): JSX.Element {
   const [autoAdvance, setAutoAdvance] = useState(true)
   const [showPartner, setShowPartner] = useState(true)
   const [online, setOnline] = useState(true)
-  const [committing, setCommitting] = useState(false)
+  const [pendingIds, setPendingIds] = useState<number[]>([])   // commits still being saved in the background
   const [undoing, setUndoing] = useState(false)
   const [escalating, setEscalating] = useState(false)
   const { toasts, toast, remove: removeToast } = useToast()
@@ -742,6 +742,11 @@ export default function Home(): JSX.Element {
   const loadTokenRef = useRef(0)                 // newest showItem call wins
   const mainLoadingRef = useRef(false)           // the item on screen is still being fetched
   const prefetchActiveRef = useRef(0)
+  // Commits are optimistic: the item leaves the queue and the next one is shown at once, and the
+  // request finishes in the background. committedRef holds every id committed this session (saving
+  // or saved) so a re-read of the queue can't bring it back; it is cleared again on failure or undo.
+  const committedRef = useRef<Set<number>>(new Set())
+  const lastCommitRef = useRef<{ wa_id: number; promise: Promise<UndoState | null> } | null>(null)
 
   useEffect(() => {
     if (!panelOpen || version !== null) return
@@ -903,7 +908,7 @@ export default function Home(): JSX.Element {
   /** Reads the full list of unmatched ids from the server (the one source of truth for order and size). */
   const syncQueue = useCallback(async (): Promise<number[]> => {
     const res = await apiFetch<QueueResponse>('/api/match/queue')
-    const ids = Array.from(new Set(res.ids))
+    const ids = Array.from(new Set(res.ids)).filter((id) => !committedRef.current.has(id))
     setQueue(ids)
     return ids
   }, [setQueue])
@@ -964,6 +969,14 @@ export default function Home(): JSX.Element {
     })()
   }, [syncQueue, showItem, showEmpty, toast])
 
+  // Warn before leaving the page while commits are still being saved.
+  useEffect(() => {
+    if (pendingIds.length === 0) return
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault() }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [pendingIds.length])
+
   useEffect(() => {
     const onOnline = () => { setOnline(true); void checkOnline() }
     const onOffline = () => setOnline(false)
@@ -1014,25 +1027,53 @@ export default function Home(): JSX.Element {
     else await showItem(target)
   }
 
-  async function doCommit() {
-    if (committing) return
+  /**
+   * Optimistic commit: the item leaves the queue and the next one is on screen right away; the
+   * request runs in the background. If it fails, the item goes back to its place in the queue and
+   * an error toast names it (and it is shown again if there is nothing else on screen).
+   */
+  function doCommit() {
+    if (state.loading) return // `state.data` may still be the previous item while the next one loads
     const effectiveId = state.selectedId ?? state.data?.auto_select_id ?? null
     if (!effectiveId) { toast('Select a candidate first', 'error'); return }
     const item = state.data?.item
     if (!item) return
-    setCommitting(true)
-    try {
-      const res = await apiFetch<{ ok: boolean; prev_id_hash: number | null }>('/api/match/commit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wa_id: item.id, hash_id: effectiveId }),
+    const waId = item.id
+    if (committedRef.current.has(waId)) return // already committed (e.g. a second Enter)
+
+    const origIndex = queueRef.current.indexOf(waId)
+    committedRef.current.add(waId)
+    setPendingIds((p: number[]) => [...p, waId])
+
+    const promise: Promise<UndoState | null> = apiFetch<{ ok: boolean; prev_id_hash: number | null }>('/api/match/commit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wa_id: waId, hash_id: effectiveId }),
+      keepalive: true, // survives a reload or tab close while in flight
+    })
+      .then((res) => {
+        const undo: UndoState = { wa_id: waId, prev_id_hash: res.prev_id_hash }
+        if (lastCommitRef.current?.wa_id === waId) setUndoState(undo)
+        return undo
       })
-      setUndoState({ wa_id: item.id, prev_id_hash: res.prev_id_hash })
-      toast('✓ Committed!', 'success')
-      await removeFinished(item.id, autoAdvance)
-    } catch (err) {
-      toast(err instanceof Error ? err.message : 'Commit failed', 'error')
-    } finally { setCommitting(false) }
+      .catch((err: unknown) => {
+        committedRef.current.delete(waId)
+        if (lastCommitRef.current?.wa_id === waId) { lastCommitRef.current = null; setUndoState(null) }
+        const q = queueRef.current
+        if (!q.includes(waId)) {
+          const copy = [...q]
+          copy.splice(Math.min(Math.max(origIndex, 0), copy.length), 0, waId)
+          setQueue(copy)
+        }
+        toast(`Commit failed for #${waId}: ${err instanceof Error ? err.message : 'unknown error'}`, 'error', 8000)
+        if (currentIdRef.current === null) void showItem(waId)
+        return null
+      })
+      .finally(() => { setPendingIds((p: number[]) => p.filter((x) => x !== waId)) })
+
+    lastCommitRef.current = { wa_id: waId, promise }
+    toast('✓ Committed', 'success', 1500)
+    void removeFinished(waId, autoAdvance)
   }
 
   // Re-run the current item's candidate search one level deeper (fast → wide →
@@ -1083,15 +1124,20 @@ export default function Home(): JSX.Element {
   }
 
   async function doUndo() {
-    if (!undoState) { toast('Nothing to undo', 'error'); return }
-    const undone = undoState
+    const last = lastCommitRef.current
+    if (!last) { toast('Nothing to undo', 'error'); return }
     setUndoing(true)
     try {
+      // The commit may still be saving: wait for it (its answer carries the previous id_hash).
+      const undone = await last.promise
+      if (!undone) return // it failed and was already rolled back
       await apiFetch('/api/match/undo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(undone),
       })
+      committedRef.current.delete(undone.wa_id)
+      if (lastCommitRef.current === last) lastCommitRef.current = null
       setUndoState(null)
       toast('↩ Undone', 'info')
       // The restored item goes back to its place in the queue: re-read the order, then show it
@@ -1229,8 +1275,8 @@ export default function Home(): JSX.Element {
               onCommit={() => void doCommit()}
               onSkip={() => void doSkip()}
               onUndo={() => void doUndo()}
-              hasUndo={undoState !== null}
-              committing={committing}
+              hasUndo={undoState !== null || pendingIds.length > 0}
+              committing={currentId !== null && pendingIds.includes(currentId)}
               undoing={undoing}
             />
 

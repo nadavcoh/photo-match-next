@@ -189,6 +189,14 @@ The page works on the list of unmatched `wa` ids, not on queue positions.
   while the item on screen is still loading; a failed prefetch is not retried for
   30 s. Constants `PREFETCH_AHEAD`, `PREFETCH_PARALLEL`, `CACHE_TTL`, `CACHE_MAX` at
   the top of the app-state section of `page.tsx`.
+- **Optimistic commit.** Commit removes the item from the queue and shows the next one
+  at once; `POST /api/match/commit` (with `keepalive`) finishes in the background.
+  `committedRef` holds ids committed this session so `syncQueue` (↻ / undo) can't bring
+  one back while it is still saving; on failure the id is removed from it, put back at its
+  old queue position and an error toast names it (it is shown again if nothing else is on
+  screen). Undo waits for the last commit's request (`lastCommitRef`), because its answer
+  carries `prev_id_hash`. `pendingIds` drives the button state and a `beforeunload` warning.
+  Skip and "search wider" are still synchronous.
 - **Auto-advance off.** The committed item stays on screen but leaves the queue;
   `ghostPosRef` remembers the gap so Prev / Next still work.
 - **Resolved elsewhere.** If an item was matched or skipped in another tab,
