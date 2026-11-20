@@ -82,6 +82,9 @@ supabase/migrations/20261114130000_hash_index_export.sql
 supabase/migrations/20261115120000_api_compare.sql
                                ← api_compare (verdicts of MATCH_ENGINE=compare) and its retention
                                  in compact_api_stats()
+supabase/migrations/20261121120000_raise_authenticated_statement_timeout.sql
+                               ← `alter role authenticated set statement_timeout = '30s'` (+ `notify pgrst,
+                                 'reload config'`); see "Timeouts and function limits"
 scripts/hash_index_parity/    ← Parity test: in-memory engine vs the SQL functions ('exact') on a
                                  local Postgres + pgvector (not a project dependency; see its README)
 
@@ -210,7 +213,7 @@ The page works on the list of unmatched `wa` ids, not on queue positions.
   answered from the database (`engine=db`, `rpc` 4–5 s) until the in-memory index
   has loaded; the first production logs of this design (2026-11-20) showed about
   30 s of that, with several prefetches in flight at once and nothing failing.
-  If cold starts ever hit the 8 s statement timeout, prefetch only while the last
+  If cold starts ever hit the statement timeout (30 s since 2026-11-21; see "Timeouts and function limits"), prefetch only while the last
   response came from `engine=memory` (not done yet).
 - **History.** Commit `007784c` first fixed Next showing a stale item by clearing
   the whole offset-keyed cache; `c030139` replaced that design with the by-id cache
@@ -627,7 +630,7 @@ next three (cause not established — don't read much into a single slow call).
   faster than `exact`.
 - Known weak spot, untested: in `fast`/`wide` the video functions' second
   candidate branch filters `video_thumb_hash_bit IS NULL` *after* an HNSW scan
-  on `hash_bit`, so video rows can use up candidate slots. `exact` avoids it.
+  on `hash_bit`, so video rows can use up candidate slots. `exact` avoids it. Checked 2026-11-21: only 10,517 of about 153k `hashes` rows (6,312 of about 86k `partner` rows) have a video thumb hash, and one image-branch search at `fast` returned 43 rows (limit 50), so few slots are lost to video rows; recall for this branch is still unmeasured.
 - The SQL was validated on scratch Postgres 16 + pgvector 0.8.0 databases with
   synthetic data (modes behave as described, `exact` returns exactly the
   brute-force result set), not against the production instance. **The scratch
@@ -762,6 +765,44 @@ Things to remember:
 - **Same rule as every other migration:** `20261114120000_api_stats.sql` is applied
   by the Supabase GitHub integration, not through the connector. Reading the stats
   with queries from `sql/stats/report.sql` is fine through the connector.
+
+## Timeouts and function limits
+
+- **Database.** Supabase sets `statement_timeout` per role: `anon` 3 s, `authenticated` and
+  `authenticator` 8 s. The API routes run as `authenticated`, so every `match_*` call,
+  `export_hash_index` and `warm_match_index` was capped at 8 s. Since 2026-11-21 (migration
+  `20261121120000_raise_authenticated_statement_timeout.sql`) `authenticated` has 30 s; `anon` is
+  unchanged. It is a role setting on purpose: Postgres arms the statement timer when the outer
+  statement starts, so `ALTER FUNCTION ... SET statement_timeout` would not extend the call
+  that is already running. It applies to every query run as `authenticated`, which is fine for a
+  single-user app. The migration was applied by the Supabase GitHub integration and the role
+  showed `statement_timeout=30s` afterwards.
+- **Vercel.** The project is on the Hobby plan (the runtime-log API says so). `/api/match` and
+  `/api/warm` export `maxDuration = 60` since 2026-11-21; 60 s is the Hobby maximum without Fluid
+  Compute. `/api/warm` was 20 s before and hit that limit twice on 2026-11-17 while loading the
+  hash index. Whether Fluid Compute is on, and so what the default duration is for routes that
+  set none, could not be read through the Vercel API: check Project Settings → Functions.
+  `WARM_BUDGET_MS` (4000) in `/api/warm` was chosen to stay under the old 8 s limit and is
+  unchanged.
+- **What the logs showed (2026-11-14 to 2026-11-20, `get_runtime_errors`).** 12 error groups,
+  almost all "canceling statement due to statement timeout": `match_hashes_video` (fast and
+  wide), `match_hashes_image` (fast, and exact from the database check of `MATCH_ENGINE=compare`
+  on 11-19), `match_partner_video` (wide), and `export_hash_index` for `hashes` and `partner`
+  while loading the in-memory index. Also `/api/warm` at its 20 s limit, and one `/auth/callback`
+  "PKCE code verifier not found" (a sign-in started in another browser, or cookies cleared;
+  harmless). Postgres logs only carry the bare timeout message, not the statement.
+- **Measurement caveat.** One `EXPLAIN (ANALYZE, BUFFERS)` of the image branch of
+  `match_hashes_video` at `fast` (ef_search 40), run through the Supabase connector on
+  2026-11-21, took 1.9 s with all 2,208 buffers already cached. That was a fresh connection, so it
+  is consistent with the cold-connection cost under "Warm-up" and is not a warm figure (warm
+  `fast` is about 3 ms). Reasoning that `wide` would therefore take about ten times as long is an
+  extrapolation, not a measurement. Instance at the time: `shared_buffers` about 224 MB,
+  `effective_cache_size` about 384 MB, `work_mem` about 2 MB; `hashes` 104 MB plus a 70 MB
+  `hash_bit` HNSW index.
+- **If it still times out.** Prefer `MATCH_ENGINE=memory` (candidate search in the function's
+  memory, see below) over raising the limits further. A partial HNSW index on
+  `video_thumb_hash_bit IS NULL` was considered and dropped: it would discard few candidates (video
+  rows are about 7% of `hashes`) and a rebuild at m = 32 is slow and write-blocking.
 
 ## In-memory matching (MATCH_ENGINE)
 
