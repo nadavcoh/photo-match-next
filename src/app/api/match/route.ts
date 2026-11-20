@@ -31,6 +31,14 @@ import type { WAItem, HashCandidate, PartnerCandidate, MatchResponse, SearchMode
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Vercel function limit. The authenticated role's statement_timeout is 30 s
+ * (supabase/migrations/20261121120000_raise_authenticated_statement_timeout.sql),
+ * and wide / exact searches can take most of that. 60 s is the Hobby maximum
+ * with or without Fluid Compute.
+ */
+export const maxDuration = 60
+
 function getThreshold(): number {
   return parseInt(process.env.HAMMING_THRESHOLD ?? '10', 10)
 }
