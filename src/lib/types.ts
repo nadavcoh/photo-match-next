@@ -111,8 +111,16 @@ export type Candidate = HashCandidate | PartnerCandidate
 export type SearchMode = 'fast' | 'wide' | 'exact'
 
 export interface MatchResponse {
+  /** Size of the unmatched queue. Only filled for `?offset=` requests; 0 for `?id=` (use QueueResponse). */
   count: number
-  offset: number
+  /** Queue position that was asked for. Only present for `?offset=` requests. */
+  offset?: number
+  /**
+   * Set by `?id=` requests when that item is no longer in the unmatched queue
+   * (matched, skipped or deleted, for example from another tab). `item` is null
+   * and no search was run.
+   */
+  resolved?: boolean
   item: WAItem | null
   candidates: HashCandidate[]
   partner_candidates: PartnerCandidate[]
@@ -127,6 +135,12 @@ export interface MatchResponse {
   engine?: 'db' | 'memory'
   /** Why that engine answered, short, for display. */
   engine_reason?: string
+}
+
+/** GET /api/match/queue: every unmatched wa id, in queue order (timestamp desc, id asc). */
+export interface QueueResponse {
+  count: number
+  ids: number[]
 }
 
 export interface CommitRequest {

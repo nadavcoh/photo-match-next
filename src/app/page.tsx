@@ -14,6 +14,7 @@ import type {
   Candidate,
   UndoState,
   SearchMode,
+  QueueResponse,
 } from '@/lib/types'
 import { WAMediaPreview } from '@/components/WAMediaPreview'
 import { createClient } from '@/lib/supabase-client'
@@ -664,7 +665,8 @@ function WAItemCard({ item, onCommit, onSkip, onUndo, hasUndo, committing, undoi
 // ── App state ──────────────────────────────────────────────────────────────────
 
 interface AppState {
-  offset: number
+  /** wa id on screen; null when the queue is empty. After a commit with auto-advance off it is no longer in the queue. */
+  currentId: number | null
   data: MatchResponse | null
   selectedId: number | null
   selectedSource: 'hashes' | 'partner' | null
@@ -672,7 +674,21 @@ interface AppState {
   error: string | null
 }
 
-const CACHE_TTL = 30_000
+// Items are cached by wa id, never by queue position: committing or skipping an
+// item shifts every position behind it but changes nothing about the items
+// themselves (their candidates depend only on their own hash). The page keeps
+// the ordered list of unmatched ids (/api/match/queue) and looks items up here.
+//   CACHE_TTL         presigned thumbnail URLs last 1 h (src/lib/e2.ts); stay well inside that
+//   CACHE_MAX         entries kept (least recently used go first)
+//   PREFETCH_AHEAD    how many items after the current one are fetched in advance
+//   PREFETCH_PARALLEL how many of those requests run at once (each downloads
+//                     thumbnails and runs sharp on the server)
+const CACHE_TTL = 20 * 60_000
+const CACHE_MAX = 30
+const PREFETCH_AHEAD = 5
+const PREFETCH_PARALLEL = 2
+/** A prefetch that failed is not retried for this long. */
+const PREFETCH_RETRY_MS = 30_000
 
 // "Search wider" escalation. Every item starts on 'fast' (approximate HNSW,
 // ef_search 40). The user can step it up when the candidates look wrong:
@@ -685,6 +701,7 @@ const NEXT_SEARCH_MODE: Record<SearchMode, SearchMode | null> = {
   wide: 'exact',
   exact: null,
 }
+const MODE_RANK: Record<SearchMode, number> = { fast: 0, wide: 1, exact: 2 }
 const ESCALATE_LABEL: Record<SearchMode, string> = {
   fast: '🔍 Not finding it? Search wider',
   wide: '🎯 Still not there? Exact search',
@@ -700,8 +717,9 @@ const SEARCH_MODE_BADGE: Record<SearchMode, string | null> = {
 
 export default function Home(): JSX.Element {
   const [state, setState] = useState<AppState>({
-    offset: 0, data: null, selectedId: null, selectedSource: null, loading: true, error: null,
+    currentId: null, data: null, selectedId: null, selectedSource: null, loading: true, error: null,
   })
+  const [queue, setQueueState] = useState<number[]>([])
   const [undoState, setUndoState] = useState<UndoState | null>(null)
   const [panelOpen, setPanelOpen] = useState(false)
   const [version, setVersion] = useState<string | null>(null)
@@ -712,15 +730,18 @@ export default function Home(): JSX.Element {
   const [undoing, setUndoing] = useState(false)
   const [escalating, setEscalating] = useState(false)
   const { toasts, toast, remove: removeToast } = useToast()
+
+  // Cache and bookkeeping. Refs, because the async code below must see the
+  // latest values, not the ones from the render it was created in.
   const cacheRef = useRef<Map<number, { data: MatchResponse; ts: number }>>(new Map())
-  // Bumped whenever the queue changes (commit / skip / undo). Offsets are
-  // positions in the unmatched queue, so every cached entry becomes stale at
-  // that moment, and any prefetch still in flight must not write its result.
-  const cacheGenRef = useRef(0)
-  const invalidateCache = useCallback(() => {
-    cacheRef.current.clear()
-    cacheGenRef.current++
-  }, [])
+  const inflightRef = useRef<Map<number, Promise<MatchResponse>>>(new Map())
+  const failedRef = useRef<Map<number, number>>(new Map())
+  const queueRef = useRef<number[]>([])          // mirror of `queue`, updated synchronously
+  const currentIdRef = useRef<number | null>(null)
+  const ghostPosRef = useRef(0)                  // where the current item left the queue (auto-advance off)
+  const loadTokenRef = useRef(0)                 // newest showItem call wins
+  const mainLoadingRef = useRef(false)           // the item on screen is still being fetched
+  const prefetchActiveRef = useRef(0)
 
   useEffect(() => {
     if (!panelOpen || version !== null) return
@@ -735,50 +756,182 @@ export default function Home(): JSX.Element {
     setShowPartner(localStorage.getItem('opt-show-partner') !== 'false')
   }, [])
 
-  const prefetchNext = useCallback(async (offset: number) => {
-    const next = offset + 1
-    const cached = cacheRef.current.get(next)
-    if (cached && Date.now() - cached.ts < CACHE_TTL) return
-    const gen = cacheGenRef.current
-    try {
-      const data = await apiFetch<MatchResponse>(`/api/match?offset=${next}`)
-      if (gen === cacheGenRef.current) cacheRef.current.set(next, { data, ts: Date.now() })
-    } catch { /* silent */ }
+  // ── Queue + cache plumbing ─────────────────────────────────────────────────
+
+  const setQueue = useCallback((ids: number[]) => {
+    queueRef.current = ids
+    setQueueState(ids)
   }, [])
 
-  const loadMatch = useCallback(async (offset: number, bustCache = false) => {
-    setState((s: AppState) => ({ ...s, loading: true, error: null, selectedId: null, selectedSource: null, offset }))
+  const cacheGet = useCallback((id: number): MatchResponse | null => {
+    const hit = cacheRef.current.get(id)
+    if (!hit) return null
+    if (Date.now() - hit.ts > CACHE_TTL) { cacheRef.current.delete(id); return null }
+    cacheRef.current.delete(id)
+    cacheRef.current.set(id, hit) // most recently used goes last
+    return hit.data
+  }, [])
 
-    if (!bustCache) {
-      const cached = cacheRef.current.get(offset)
-      if (cached && Date.now() - cached.ts < CACHE_TTL) {
-        const autoId = cached.data.auto_select_id
-        setState((s: AppState) => ({
-          ...s, data: cached.data, loading: false,
-          selectedId: autoId ?? null,
-          selectedSource: autoId ? 'hashes' : null,
-        }))
-        prefetchNext(offset)
-        return
-      }
+  const cachePut = useCallback((id: number, data: MatchResponse, force = false) => {
+    const prev = cacheRef.current.get(id)
+    // A background fast search must not replace a wider one the user asked for.
+    if (!force && prev && Date.now() - prev.ts <= CACHE_TTL &&
+        MODE_RANK[prev.data.search_mode ?? 'fast'] > MODE_RANK[data.search_mode ?? 'fast']) return
+    cacheRef.current.delete(id)
+    cacheRef.current.set(id, { data, ts: Date.now() })
+    while (cacheRef.current.size > CACHE_MAX) {
+      const oldest = cacheRef.current.keys().next().value
+      if (oldest === undefined) break
+      cacheRef.current.delete(oldest)
+    }
+  }, [])
+
+  /** Fetches one item by id. Requests for the same id share one network call (unless forced). */
+  const fetchItem = useCallback((id: number, force = false): Promise<MatchResponse> => {
+    if (!force) {
+      const running = inflightRef.current.get(id)
+      if (running) return running
+    }
+    const p: Promise<MatchResponse> = apiFetch<MatchResponse>(`/api/match?id=${id}`)
+      .then((data) => {
+        if (!data.resolved) cachePut(id, data, force)
+        return data
+      })
+      .finally(() => { if (inflightRef.current.get(id) === p) inflightRef.current.delete(id) })
+    inflightRef.current.set(id, p)
+    return p
+  }, [cachePut])
+
+  /**
+   * Where the current item sits in the queue. If it already left the queue
+   * (committed with auto-advance off) we stand in the gap it left behind.
+   */
+  const locate = useCallback(() => {
+    const q = queueRef.current
+    const idx = currentIdRef.current === null ? -1 : q.indexOf(currentIdRef.current)
+    const gap = idx >= 0 ? idx : Math.min(ghostPosRef.current, q.length)
+    const aheadFrom = idx >= 0 ? idx + 1 : gap
+    return { q, prev: q[gap - 1] ?? null, next: q[aheadFrom] ?? null, aheadFrom }
+  }, [])
+
+  /** Keeps up to PREFETCH_PARALLEL requests running for the next PREFETCH_AHEAD items. */
+  const pump = useCallback(() => {
+    if (mainLoadingRef.current) return // the item on screen goes first
+    const { q, aheadFrom } = locate()
+    for (const id of q.slice(aheadFrom, aheadFrom + PREFETCH_AHEAD)) {
+      if (prefetchActiveRef.current >= PREFETCH_PARALLEL) return
+      if (inflightRef.current.has(id)) continue
+      const hit = cacheRef.current.get(id)
+      if (hit && Date.now() - hit.ts <= CACHE_TTL) continue
+      const failedAt = failedRef.current.get(id)
+      if (failedAt !== undefined && Date.now() - failedAt < PREFETCH_RETRY_MS) continue
+      prefetchActiveRef.current++
+      fetchItem(id)
+        .then((data) => {
+          // Handled elsewhere in the meantime: drop it from the queue (it is ahead of the
+          // current item, so no position before it moves) instead of asking for it again.
+          if (data.resolved) setQueue(queueRef.current.filter((x) => x !== id))
+        })
+        .catch(() => { failedRef.current.set(id, Date.now()) }) // silent: it is fetched when you get there
+        .finally(() => { prefetchActiveRef.current--; pump() })
+    }
+  }, [fetchItem, locate, setQueue])
+
+  const showEmpty = useCallback(() => {
+    currentIdRef.current = null
+    mainLoadingRef.current = false
+    try { window.history.replaceState(null, '', window.location.pathname + window.location.search) } catch { /* ignore */ }
+    setState((s: AppState) => ({
+      ...s, currentId: null, data: null, loading: false, error: null, selectedId: null, selectedSource: null,
+    }))
+  }, [])
+
+  /** Puts the item with this id on screen: from the cache if it is there, otherwise from the server. */
+  const showItem = useCallback(async (id: number, force = false): Promise<void> => {
+    const token = ++loadTokenRef.current
+    currentIdRef.current = id
+    try { window.history.replaceState(null, '', `#wa-${id}`) } catch { /* ignore */ }
+
+    const cached = force ? null : cacheGet(id)
+    if (cached) {
+      mainLoadingRef.current = false
+      const autoId = cached.auto_select_id
+      setState((s: AppState) => ({
+        ...s, currentId: id, data: cached, loading: false, error: null,
+        selectedId: autoId ?? null, selectedSource: autoId ? 'hashes' : null,
+      }))
+      pump()
+      return
     }
 
+    mainLoadingRef.current = true
+    setState((s: AppState) => ({
+      ...s, currentId: id, loading: true, error: null, selectedId: null, selectedSource: null,
+    }))
     try {
-      const data = await apiFetch<MatchResponse>(`/api/match?offset=${offset}`)
-      cacheRef.current.set(offset, { data, ts: Date.now() })
+      const data = await fetchItem(id, force)
+      if (token !== loadTokenRef.current) return // the user moved on while this was loading
+      if (data.resolved || !data.item) {
+        // Matched or skipped somewhere else: drop it and move to the item that took its place.
+        const q = queueRef.current
+        const i = q.indexOf(id)
+        const rest = q.filter((x) => x !== id)
+        setQueue(rest)
+        toast('Already handled elsewhere, skipped it', 'info')
+        const at = i >= 0 ? i : 0
+        const target = rest[at] ?? rest[at - 1] ?? null
+        mainLoadingRef.current = false
+        if (target === null) showEmpty()
+        else await showItem(target)
+        return
+      }
       const autoId = data.auto_select_id
       setState((s: AppState) => ({
-        ...s, data, loading: false,
-        selectedId: autoId ?? null,
-        selectedSource: autoId ? 'hashes' : null,
+        ...s, currentId: id, data, loading: false, error: null,
+        selectedId: autoId ?? null, selectedSource: autoId ? 'hashes' : null,
       }))
-      prefetchNext(offset)
+    } catch (err) {
+      if (token !== loadTokenRef.current) return
+      const msg = err instanceof Error ? err.message : 'Failed to load'
+      toast(msg, 'error')
+      setState((s: AppState) => ({ ...s, loading: false, error: msg }))
+    } finally {
+      if (token === loadTokenRef.current) { mainLoadingRef.current = false; pump() }
+    }
+  }, [cacheGet, fetchItem, pump, setQueue, showEmpty, toast])
+
+  /** Reads the full list of unmatched ids from the server (the one source of truth for order and size). */
+  const syncQueue = useCallback(async (): Promise<number[]> => {
+    const res = await apiFetch<QueueResponse>('/api/match/queue')
+    const ids = Array.from(new Set(res.ids))
+    setQueue(ids)
+    return ids
+  }, [setQueue])
+
+  /** ↻ and Retry: re-read the queue and re-search the current item from scratch. */
+  const refresh = useCallback(async () => {
+    try {
+      const ids = await syncQueue()
+      const cur = currentIdRef.current
+      const target = cur !== null && ids.includes(cur) ? cur : (locate().next ?? ids[0] ?? null)
+      if (target === null) showEmpty()
+      else await showItem(target, true)
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to load'
       toast(msg, 'error')
       setState((s: AppState) => ({ ...s, loading: false, error: msg }))
     }
-  }, [prefetchNext, toast])
+  }, [locate, showEmpty, showItem, syncQueue, toast])
+
+  const goNext = useCallback(() => {
+    const { next } = locate()
+    if (next !== null) void showItem(next)
+  }, [locate, showItem])
+
+  const goPrev = useCallback(() => {
+    const { prev } = locate()
+    if (prev !== null) void showItem(prev)
+  }, [locate, showItem])
 
   const checkOnline = useCallback(async () => {
     try {
@@ -790,9 +943,26 @@ export default function Home(): JSX.Element {
   useEffect(() => {
     checkOnline()
     const iv = setInterval(checkOnline, 30_000)
-    loadMatch(0)
     return () => clearInterval(iv)
-  }, [checkOnline, loadMatch])
+  }, [checkOnline])
+
+  // First load: read the queue, then open the item named in the URL hash (#wa-123) or the first one.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const ids = await syncQueue()
+        const m = /^#wa-(\d+)$/.exec(window.location.hash)
+        const wanted = m ? parseInt(m[1], 10) : null
+        const start = wanted !== null && ids.includes(wanted) ? wanted : (ids[0] ?? null)
+        if (start === null) showEmpty()
+        else await showItem(start)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed to load'
+        toast(msg, 'error')
+        setState((s: AppState) => ({ ...s, loading: false, error: msg }))
+      }
+    })()
+  }, [syncQueue, showItem, showEmpty, toast])
 
   useEffect(() => {
     const onOnline = () => { setOnline(true); void checkOnline() }
@@ -806,11 +976,10 @@ export default function Home(): JSX.Element {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
-      const { offset } = state
       if (e.key === 'Enter' || e.key === 'c') { void doCommit(); return }
-      if ((e.key === 'ArrowRight' || e.key === 'n') && state.data?.count) { void loadMatch(offset + 1); return }
-      if ((e.key === 'ArrowLeft'  || e.key === 'p') && offset > 0)        { void loadMatch(offset - 1); return }
-      if (e.key === 'r') { void loadMatch(offset, true); return }
+      if (e.key === 'ArrowRight' || e.key === 'n') { goNext(); return }
+      if (e.key === 'ArrowLeft'  || e.key === 'p') { goPrev(); return }
+      if (e.key === 'r') { void refresh(); return }
       if (e.key === 'e') { void doEscalate(); return }
       const num = parseInt(e.key, 10)
       if (num >= 1 && num <= 9) {
@@ -824,42 +993,70 @@ export default function Home(): JSX.Element {
 
   // ── Actions ────────────────────────────────────────────────────────────────
 
+  /**
+   * Takes a finished item (committed, skipped, or found handled elsewhere) out of
+   * the queue. If it is the one on screen and `advance` is set, moves on to the
+   * item that now sits at its position; with `advance` off it stays on screen and
+   * Prev / Next work from the gap it left. Nothing else needs refetching: every
+   * other cached item is still valid.
+   */
+  async function removeFinished(id: number, advance: boolean) {
+    const q = queueRef.current
+    const i = q.indexOf(id)
+    const rest = q.filter((x) => x !== id)
+    setQueue(rest)
+    if (currentIdRef.current !== id) { pump(); return } // the user already moved on; don't yank them back
+    if (i >= 0) ghostPosRef.current = i
+    if (!advance) { pump(); return }
+    const at = i >= 0 ? i : ghostPosRef.current
+    const target = rest[at] ?? rest[at - 1] ?? null
+    if (target === null) showEmpty()
+    else await showItem(target)
+  }
+
   async function doCommit() {
+    if (committing) return
     const effectiveId = state.selectedId ?? state.data?.auto_select_id ?? null
     if (!effectiveId) { toast('Select a candidate first', 'error'); return }
-    if (!state.data?.item) return
+    const item = state.data?.item
+    if (!item) return
     setCommitting(true)
     try {
       const res = await apiFetch<{ ok: boolean; prev_id_hash: number | null }>('/api/match/commit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wa_id: state.data.item.id, hash_id: effectiveId }),
+        body: JSON.stringify({ wa_id: item.id, hash_id: effectiveId }),
       })
-      setUndoState({ wa_id: state.data.item.id, prev_id_hash: res.prev_id_hash })
-      invalidateCache()
+      setUndoState({ wa_id: item.id, prev_id_hash: res.prev_id_hash })
       toast('✓ Committed!', 'success')
-      if (autoAdvance) await loadMatch(state.offset, true)
+      await removeFinished(item.id, autoAdvance)
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Commit failed', 'error')
     } finally { setCommitting(false) }
   }
 
   // Re-run the current item's candidate search one level deeper (fast → wide →
-  // exact). Stays on the same offset and keeps the page visible (no full-screen
+  // exact). Stays on the same item and keeps the page visible (no full-screen
   // spinner); only the candidates and the auto-selection are replaced.
   async function doEscalate() {
     const current: SearchMode = state.data?.search_mode ?? 'fast'
     const next = NEXT_SEARCH_MODE[current]
-    if (!next || escalating || state.loading || !state.data?.item) return
-    const at = state.offset
+    if (!next || escalating || state.loading || !state.data?.item || state.currentId === null) return
+    const at = state.currentId
     setEscalating(true)
     try {
-      const data = await apiFetch<MatchResponse>(`/api/match?offset=${at}&mode=${next}`)
-      cacheRef.current.set(at, { data, ts: Date.now() })
+      const data = await apiFetch<MatchResponse>(`/api/match?id=${at}&mode=${next}`)
+      if (data.resolved || !data.item) {
+        toast('Already handled elsewhere, skipped it', 'info')
+        await removeFinished(at, true)
+        return
+      }
+      // Keep the wider result with its item, so it is still there when you come back to it.
+      cachePut(at, data, true)
       const autoId = data.auto_select_id
-      // If the user navigated away while this was running, keep the result in
-      // the cache (keyed by its own offset) but don't touch the screen.
-      setState((s: AppState) => s.offset !== at ? s : {
+      // If the user moved to another item while this was running, the result stays in the
+      // cache (keyed by its own id) but the screen is left alone.
+      setState((s: AppState) => s.currentId !== at ? s : {
         ...s, data,
         selectedId: autoId ?? null,
         selectedSource: autoId ? 'hashes' : null,
@@ -872,32 +1069,37 @@ export default function Home(): JSX.Element {
   }
 
   async function doSkip() {
-    if (!state.data?.item) return
+    const item = state.data?.item
+    if (!item) return
     try {
       await apiFetch('/api/match/skip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wa_id: state.data.item.id }),
+        body: JSON.stringify({ wa_id: item.id }),
       })
-      invalidateCache()
       toast('Skipped', 'info')
-      await loadMatch(state.offset, true)
+      await removeFinished(item.id, true)
     } catch (err) { toast(err instanceof Error ? err.message : 'Skip failed', 'error') }
   }
 
   async function doUndo() {
     if (!undoState) { toast('Nothing to undo', 'error'); return }
+    const undone = undoState
     setUndoing(true)
     try {
       await apiFetch('/api/match/undo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(undoState),
+        body: JSON.stringify(undone),
       })
       setUndoState(null)
-      invalidateCache()
       toast('↩ Undone', 'info')
-      await loadMatch(state.offset, true)
+      // The restored item goes back to its place in the queue: re-read the order, then show it
+      // (its earlier result is usually still cached, so it appears at once).
+      const ids = await syncQueue()
+      const target = ids.includes(undone.wa_id) ? undone.wa_id : (locate().next ?? ids[0] ?? null)
+      if (target === null) showEmpty()
+      else await showItem(target)
     } catch (err) { toast(err instanceof Error ? err.message : 'Undo failed', 'error') }
     finally { setUndoing(false) }
   }
@@ -918,11 +1120,16 @@ export default function Home(): JSX.Element {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  const { data, loading, error, offset, selectedId, selectedSource } = state
+  const { data, loading, error, currentId, selectedId, selectedSource } = state
   const item = data?.item
   const autoSelectId = data?.auto_select_id ?? null
-  const count = data?.count ?? 0
-  const pct = count > 0 ? Math.max(0, 100 - Math.round((offset / count) * 100)) : 0
+  const count = queue.length
+  const idx = currentId !== null ? queue.indexOf(currentId) : -1
+  const gap = idx >= 0 ? idx : Math.min(ghostPosRef.current, count)
+  const position = Math.min(gap + 1, Math.max(count, 1))
+  const hasPrev = gap > 0
+  const hasNext = (idx >= 0 ? idx + 1 : gap) < count
+  const pct = count > 0 ? Math.max(0, 100 - Math.round(((position - 1) / count) * 100)) : 0
 
   const allCandidates: Candidate[] = [
     ...(data?.candidates ?? []),
@@ -982,37 +1189,37 @@ export default function Home(): JSX.Element {
             <div style={{ fontSize: '3rem', marginBottom: 8 }}>⚠️</div>
             <h2 style={{ fontSize: '1.2rem', marginBottom: 8 }}>Error</h2>
             <p style={{ color: 'var(--muted)', marginBottom: 16, fontSize: '.85rem' }}>{error}</p>
-            <Btn variant="primary" onClick={() => void loadMatch(0, true)}>Retry</Btn>
+            <Btn variant="primary" onClick={() => void refresh()}>Retry</Btn>
           </div>
         )}
 
-        {!loading && !error && (!item || count === 0) && (
+        {!loading && !error && (currentId === null || !item) && (
           <div style={{ textAlign: 'center', padding: '60px 20px' }}>
             <div style={{ fontSize: '3rem', marginBottom: 8 }}>🎉</div>
             <h2 style={{ fontSize: '1.2rem', marginBottom: 8 }}>All done!</h2>
             <p style={{ color: 'var(--muted)', marginBottom: 16, fontSize: '.85rem' }}>No more items to match.</p>
-            <Btn variant="ghost" onClick={() => void loadMatch(0, true)}>↻ Refresh</Btn>
+            <Btn variant="ghost" onClick={() => void refresh()}>↻ Refresh</Btn>
           </div>
         )}
 
-        {!loading && !error && item && count > 0 && (
+        {!loading && !error && item && currentId !== null && (
           <>
             {/* Progress */}
             <div style={{ height: 3, background: 'var(--border)', borderRadius: 2, overflow: 'hidden', marginBottom: 12 }}>
               <div style={{ height: '100%', width: `${pct}%`, background: 'var(--accent)', borderRadius: 2, transition: 'width .4s ease' }} />
             </div>
             <div style={{ fontSize: '.7rem', color: 'var(--muted)', marginBottom: 10 }}>
-              {count} remaining · item {offset + 1}
+              {count} remaining
             </div>
 
             {/* Nav */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-              <Btn onClick={() => void loadMatch(Math.max(0, offset - 1))} disabled={offset === 0}>‹ Prev</Btn>
+              <Btn onClick={goPrev} disabled={!hasPrev}>‹ Prev</Btn>
               <div style={{ fontSize: '.75rem', color: 'var(--muted)', background: 'var(--border)', borderRadius: 8, padding: '4px 10px', minWidth: 80, textAlign: 'center' }}>
-                offset {offset}
+                {position} of {count}
               </div>
-              <Btn onClick={() => void loadMatch(offset + 1)}>Next ›</Btn>
-              <Btn onClick={() => void loadMatch(offset, true)}>↻</Btn>
+              <Btn onClick={goNext} disabled={!hasNext}>Next ›</Btn>
+              <Btn onClick={() => void refresh()}>↻</Btn>
             </div>
 
             {/* Item */}

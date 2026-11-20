@@ -1,7 +1,14 @@
 /**
  * src/app/api/match/route.ts
  *
- * Returns the next unmatched WA item and its hash/partner candidates.
+ * Returns one unmatched WA item and its hash/partner candidates.
+ *
+ *  - `?id=<wa id>`   the item with that id (what the page uses; the page keeps
+ *                    the id list from /api/match/queue). If the item is no
+ *                    longer unmatched the response has `resolved: true`, no item
+ *                    and no search is run.
+ *  - `?offset=<n>`   the n-th item of the unmatched queue (older clients).
+ *  - `?mode=`        search depth, see SearchMode.
  *
  * Changes from the original:
  *  - Removed: pg Pool (db.ts), downloadThumbnailBytes (supabase.ts service role key)
@@ -417,6 +424,20 @@ function computeAutoSelect(
   return null
 }
 
+// ── wa row as selected by the route ────────────────────────────────────────────
+
+interface WARow {
+  id: number
+  filename: string | null
+  filetype: string | null
+  hash_bit: string | null
+  video_thumb_hash_bit: string | null
+  timestamp: string | null
+  duration: number | null
+}
+
+const WA_COLUMNS = 'id, filename, filetype, hash_bit, video_thumb_hash_bit, timestamp, duration'
+
 // ── Route handler ──────────────────────────────────────────────────────────────
 
 /**
@@ -474,6 +495,8 @@ async function compareWithDatabase(
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const { searchParams } = new URL(request.url)
   const offset    = Math.max(0, parseInt(searchParams.get('offset') ?? '0', 10))
+  const idParam   = searchParams.get('id')
+  const waId      = idParam !== null && /^\d+$/.test(idParam) ? parseInt(idParam, 10) : null
   const mode      = parseMode(searchParams.get('mode'))
   const engine    = pickEngine(searchParams.get('engine'))
   const threshold = getThreshold()
@@ -488,51 +511,68 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const supabase = await createClient()
     statsClient = supabase
 
-    // ── Count unmatched items ──────────────────────────────────────────────
-    const { count, error: countError } = await supabase
-      .from('wa')
-      .select('*', { count: 'exact', head: true })
-      .is('id_hash', null)
-      .is('processed', null)
+    let total = 0
+    let waRow: WARow
 
-    if (countError) throw new Error(countError.message)
-    mark('count')
+    if (waId !== null) {
+      // ── By id: one primary-key lookup, no count, no ordering ─────────────
+      const { data: idRow, error: idError } = await supabase
+        .from('wa')
+        .select(`${WA_COLUMNS}, id_hash, processed`)
+        .eq('id', waId)
+        .maybeSingle()
 
-    const total = count ?? 0
-    if (total === 0) {
-      return NextResponse.json(
-        { count: 0, offset, item: null, candidates: [], partner_candidates: [], auto_select_id: null, search_mode: mode } as MatchResponse,
-        { headers: { 'Cache-Control': 'no-store' } }
-      )
-    }
+      if (idError) throw new Error(idError.message)
+      mark('item')
 
-    // ── Fetch item at offset ───────────────────────────────────────────────
-    const { data: waRows, error: waError } = await supabase
-      .from('wa')
-      .select('id, filename, filetype, hash_bit, video_thumb_hash_bit, timestamp, duration')
-      .is('id_hash', null)
-      .is('processed', null)
-      .order('timestamp', { ascending: false })
-      .order('id',        { ascending: true  })
-      .range(offset, offset)
+      const row = idRow as (WARow & { id_hash: number | null; processed: boolean | null }) | null
+      if (!row || row.id_hash !== null || row.processed !== null) {
+        // Gone, or already matched / skipped (for example in another tab).
+        return NextResponse.json(
+          { count: 0, item: null, candidates: [], partner_candidates: [], auto_select_id: null, search_mode: mode, resolved: true } as MatchResponse,
+          { headers: { 'Cache-Control': 'no-store' } }
+        )
+      }
+      waRow = row
+    } else {
+      // ── Count unmatched items ────────────────────────────────────────────
+      const { count, error: countError } = await supabase
+        .from('wa')
+        .select('*', { count: 'exact', head: true })
+        .is('id_hash', null)
+        .is('processed', null)
 
-    if (waError) throw new Error(waError.message)
-    mark('item')
-    if (!waRows?.length) {
-      return NextResponse.json(
-        { count: 0, offset, item: null, candidates: [], partner_candidates: [], auto_select_id: null, search_mode: mode } as MatchResponse,
-        { headers: { 'Cache-Control': 'no-store' } }
-      )
-    }
+      if (countError) throw new Error(countError.message)
+      mark('count')
 
-    const waRow = waRows[0] as {
-      id: number
-      filename: string | null
-      filetype: string | null
-      hash_bit: string | null
-      video_thumb_hash_bit: string | null
-      timestamp: string | null
-      duration: number | null
+      total = count ?? 0
+      if (total === 0) {
+        return NextResponse.json(
+          { count: 0, offset, item: null, candidates: [], partner_candidates: [], auto_select_id: null, search_mode: mode } as MatchResponse,
+          { headers: { 'Cache-Control': 'no-store' } }
+        )
+      }
+
+      // ── Fetch item at offset ─────────────────────────────────────────────
+      const { data: waRows, error: waError } = await supabase
+        .from('wa')
+        .select(WA_COLUMNS)
+        .is('id_hash', null)
+        .is('processed', null)
+        .order('timestamp', { ascending: false })
+        .order('id',        { ascending: true  })
+        .range(offset, offset)
+
+      if (waError) throw new Error(waError.message)
+      mark('item')
+      if (!waRows?.length) {
+        return NextResponse.json(
+          { count: 0, offset, item: null, candidates: [], partner_candidates: [], auto_select_id: null, search_mode: mode } as MatchResponse,
+          { headers: { 'Cache-Control': 'no-store' } }
+        )
+      }
+
+      waRow = waRows[0] as WARow
     }
 
     const waItem: WAItem = {
@@ -623,7 +663,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
     mark('sign')
     console.log(
-      `[/api/match] ${Math.round(performance.now() - t0)} ms region=${process.env.VERCEL_REGION ?? '?'} mode=${mode} offset=${offset} video=${isVideo} ` +
+      `[/api/match] ${Math.round(performance.now() - t0)} ms region=${process.env.VERCEL_REGION ?? '?'} mode=${mode} ${waId !== null ? `id=${waId}` : `offset=${offset}`} video=${isVideo} ` +
       `engine=${engineUsed} hashes=${candidates.length} partner=${partnerCandidates.length} thumbs=${allThumbs.length} ` +
       Object.entries(marks).map(([k, v]) => `${k}=${v}`).join(' '),
     )
@@ -646,7 +686,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json(
       {
         count: total,
-        offset,
+        offset: waId !== null ? undefined : offset,
         item: signedItem,
         candidates: signedCandidates,
         partner_candidates: signedPartner,

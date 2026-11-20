@@ -42,18 +42,24 @@ src/app/page.tsx              ← THE app. One big client component (~800 lines)
                                  toasts, candidate grid, settings panel, keyboard
                                  shortcuts (←/→/n/p, Enter/c=commit, r=refresh,
                                  e=search wider, 1-9=pick candidate N),
-                                 prefetch-next-item cache, and the "Search
-                                 wider" escalate button (fast → wide → exact).
+                                 the by-id item cache + prefetch (see "Queue, ids
+                                 and the item cache"), and the "Search wider"
+                                 escalate button (fast → wide → exact).
 src/components/WAMediaPreview.tsx
                                ← Full-size original media (photo/video) preview,
                                  shown only when item.filename starts with "Media".
                                  Fetches a signed URL from /api/media.
 
-src/app/api/match/route.ts    ← GET: next unmatched wa item + hashes/partner
+src/app/api/match/route.ts    ← GET: one unmatched wa item + hashes/partner
                                  candidates (via RPC) + pixel-distance scoring +
                                  auto-select id. This is the core business logic.
-                                 `?offset=N` picks the item; `?mode=fast|wide|exact`
-                                 picks the search depth (default fast).
+                                 `?id=<wa id>` picks the item (what the page uses;
+                                 `resolved: true` if it is no longer unmatched),
+                                 `?offset=N` picks the N-th item of the queue (older
+                                 clients); `?mode=fast|wide|exact` picks the search
+                                 depth (default fast).
+src/app/api/match/queue/route.ts    ← GET: every unmatched wa id in queue order
+                                 (timestamp desc, id asc), read in 1,000-row chunks
 src/app/api/match/commit/route.ts   ← POST: set wa.id_hash (or mark processed)
 src/app/api/match/skip/route.ts     ← POST: mark wa.processed = true
 src/app/api/match/undo/route.ts     ← POST: revert last commit/skip
@@ -160,6 +166,38 @@ sql/hnsw_recall_tests.sql     ← Recall/latency/behaviour checks for the match_
    synced WhatsApp photo/video, shown in `WAMediaPreview` below the item card,
    only when `filename` starts with `"Media"`. This is what migrated from
    Cloudinary to Backblaze B2.
+
+## Queue, ids and the item cache
+
+The page works on the list of unmatched `wa` ids, not on queue positions.
+
+- **Queue.** On load (and on ↻ / undo) the page reads `GET /api/match/queue`: all
+  unmatched ids, ordered `timestamp desc, id asc` (about 3,600 ids, ~30 KB; the
+  route reads them in 1,000-row chunks because PostgREST caps a response at 1,000
+  rows). Position is `queue.indexOf(currentId)`; "N of count" in the UI is that.
+- **Items.** `GET /api/match?id=<wa id>` is a primary-key lookup (no count, no
+  ordering). Its result depends only on that item's own hash, so it stays valid
+  when other items are committed or skipped. This is why the cache is keyed by id:
+  the earlier offset-keyed cache went stale on every commit (the queue shifts, so
+  the cached `offset + 1` became the new current item and Next showed it again).
+- **Cache** (`page.tsx`): `Map<wa id, {data, ts}>`, 20 min TTL (presigned
+  thumbnail URLs last 1 h), 30 entries, least recently used evicted first. Requests
+  for one id are shared (`inflightRef`). Commit / skip only remove the id from the
+  queue; nothing is invalidated. Undo re-reads the queue and shows the restored item
+  (usually still cached).
+- **Prefetch.** `pump()` keeps up to 2 requests running for the next 5 items, never
+  while the item on screen is still loading; a failed prefetch is not retried for
+  30 s. Constants `PREFETCH_AHEAD`, `PREFETCH_PARALLEL`, `CACHE_TTL`, `CACHE_MAX` at
+  the top of the app-state section of `page.tsx`.
+- **Auto-advance off.** The committed item stays on screen but leaves the queue;
+  `ghostPosRef` remembers the gap so Prev / Next still work.
+- **Resolved elsewhere.** If an item was matched or skipped in another tab,
+  `?id=` answers `resolved: true`; the page drops it from the queue and moves on.
+- **URL hash.** The current id is kept in `#wa-<id>` (replaceState), so a reload
+  reopens the same item; an id that is no longer in the queue falls back to the
+  first item.
+- **Not covered.** The queue is read when the page loads and on ↻ / undo, so items
+  added by the scrapers appear after ↻.
 
 ## Auth model
 
@@ -502,12 +540,13 @@ next three (cause not established — don't read much into a single slow call).
   `exact` (no index). All four HNSW indexes are built with `m = 32,
   ef_construction = 200`.
 - The UI starts every item on `fast`. The **Search wider** button (key `e`)
-  re-runs the *same offset* at `wide`, then `exact`. The API echoes
+  re-runs the *same item* (by id) at `wide`, then `exact`. The API echoes
   `search_mode` in the response, and the UI derives its current level from
   that — so cached data carries its own level. Anything that fetches an item
-  fresh (commit, skip, undo, ↻, or navigating to an uncached offset) starts on
-  `fast`; an escalated result stays in the 30 s cache like any other and is
-  shown as the user left it. Prefetch (offset + 1) is always `fast`.
+  fresh (↻, or navigating to an item that is not cached) starts on `fast`; an
+  escalated result stays in the cache with its item and is shown as the user left
+  it (a background `fast` prefetch never replaces a wider result). Prefetch is
+  always `fast`.
 - Why not just always use `exact`? It's ~35 ms and can't miss, and was the
   simplest option; the escalation design was chosen instead to keep `fast`
   quick for the common case. If maintaining it becomes a chore, switching the
