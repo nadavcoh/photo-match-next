@@ -17,7 +17,7 @@ import { compactApiStats, recordApiStat } from '@/lib/stats'
 import { getIndex, maintainIndex } from '@/lib/hashIndex'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 20
+export const maxDuration = 60
 
 /**
  * Time budget handed to warm_match_index (4000 is also its own default). Tried 5500
