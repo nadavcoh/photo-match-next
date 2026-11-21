@@ -63,6 +63,15 @@ src/app/api/match/queue/route.ts    ← GET: every unmatched wa id in queue orde
 src/app/api/match/commit/route.ts   ← POST: set wa.id_hash (or mark processed)
 src/app/api/match/skip/route.ts     ← POST: mark wa.processed = true
 src/app/api/match/undo/route.ts     ← POST: revert last commit/skip
+src/app/api/skipped/route.ts        ← GET ?offset=&limit=: skipped wa items (processed = true,
+                                 id_hash null), timestamp desc / id asc, with presigned e2
+                                 thumbnail URLs and the exact total. Skip and a "no match"
+                                 commit leave the same state, so they can't be told apart.
+src/app/skipped/page.tsx      ← The /skipped screen (linked from the ⏭️ button in the main
+                                 header): thumbnail grid, "Load more", detail sheet with
+                                 WAMediaPreview, "Back to queue" = POST /api/match/undo with
+                                 prev_id_hash null. Own small client component, no shared
+                                 state with page.tsx.
 src/app/api/media/route.ts    ← POST: { filename } → signed B2 GET URL for the
                                  full-size original (see lib/b2.ts)
 src/app/api/health/route.ts   ← GET: liveness check (polled every 30s client-side)

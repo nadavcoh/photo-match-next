@@ -1214,11 +1214,18 @@ export default function Home(): JSX.Element {
         <div style={{ fontSize: '1.1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 7 }}>
           <span>📷</span> Photo Match
         </div>
-        <button onClick={() => setPanelOpen(true)} style={{
-          border: '1px solid var(--border)', borderRadius: 10,
-          padding: '6px 10px', background: 'var(--surface)',
-          color: 'var(--dim)', cursor: 'pointer', fontSize: '.85rem',
-        }} title="Settings">⚙️</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <a href="/skipped" style={{
+            border: '1px solid var(--border)', borderRadius: 10,
+            padding: '6px 10px', background: 'var(--surface)',
+            color: 'var(--dim)', fontSize: '.85rem', textDecoration: 'none',
+          }} title="Skipped photos">⏭️</a>
+          <button onClick={() => setPanelOpen(true)} style={{
+            border: '1px solid var(--border)', borderRadius: 10,
+            padding: '6px 10px', background: 'var(--surface)',
+            color: 'var(--dim)', cursor: 'pointer', fontSize: '.85rem',
+          }} title="Settings">⚙️</button>
+        </div>
       </header>
 
       {/* Main */}

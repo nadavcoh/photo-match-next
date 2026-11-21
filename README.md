@@ -179,6 +179,15 @@ Keys: `Enter` or `c` commit, `←`/`p` previous, `→`/`n` next, `r` refresh,
 `e` search wider, `1`–`9` pick a candidate. The design and its limits are in
 [`CLAUDE.md`](./CLAUDE.md) under "Queue, ids and the item cache".
 
+## Skipped photos
+
+The ⏭️ button in the header opens `/skipped`: every item that was skipped (marked
+processed without a match), newest first, 48 at a time with "Load more". Tap a
+thumbnail to see the original (photos and videos synced to B2) and press
+**Back to queue** to put it back; it is then in the unmatched queue again
+(the main page picks it up on load or ↻). Skip and a "no match" commit leave the
+same state in the database, so both show up here.
+
 ## Search modes and the "Search wider" button
 
 Candidate search uses HNSW indexes, which are *approximate*: they can miss a

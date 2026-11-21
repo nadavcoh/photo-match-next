@@ -143,6 +143,25 @@ export interface QueueResponse {
   ids: number[]
 }
 
+/** One skipped wa item (processed = true, no id_hash), for the /skipped screen. */
+export interface SkippedItem {
+  id: number
+  filename: string
+  filetype: string
+  timestamp: string | null
+  duration: number | null
+  /** Presigned e2 thumbnail URL; empty string if e2 isn't configured. */
+  thumbnail_url: string
+}
+
+/** GET /api/skipped: one page of skipped items, newest first. */
+export interface SkippedResponse {
+  /** Total number of skipped items. */
+  count: number
+  offset: number
+  items: SkippedItem[]
+}
+
 export interface CommitRequest {
   wa_id: number
   hash_id?: number | null
