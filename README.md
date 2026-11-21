@@ -164,7 +164,12 @@ and not by queue position, committing or skipping never makes it stale.
 
 - Counters read "N remaining" and "N of count".
 - The current item's id is kept in the URL (`#wa-<id>`), so a reload reopens it.
-- **Undo** puts the item back in the queue and shows it again.
+- **Commit is optimistic.** The item leaves the queue and the next one appears
+  immediately; the save finishes in the background (it survives a reload, and the
+  browser warns before you leave while one is pending). If a save fails, the item
+  goes back to its place in the queue and an error toast names it.
+- **Undo** puts the item back in the queue and shows it again. If the last commit
+  is still saving, undo waits for it first.
 - If an item was handled in another tab, it is dropped from the queue
   automatically.
 - The queue is read on load and on ↻ / undo; items added by the scrapers in the
