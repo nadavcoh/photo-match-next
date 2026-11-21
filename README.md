@@ -218,9 +218,9 @@ or `psql`.)
   `20261121120000_raise_authenticated_statement_timeout.sql`). `anon` stays at 3 s.
   It is a role setting because a timeout set inside a function does not extend the
   call that is already running.
-- **Vercel.** `/api/match` and `/api/warm` export `maxDuration = 60`, the Hobby
-  plan's maximum without Fluid Compute. Routes that set none use the project's
-  default (Project Settings → Functions).
+- **Vercel.** `/api/match` and `/api/warm` export `maxDuration = 60`, a cap well above the
+  30 s database timeout. Fluid Compute is on, so routes that set none use the project default of
+  300 s (Project Settings → Functions).
 - If searches still time out, `MATCH_ENGINE=memory` takes the candidate search out
   of the database. The evidence and the reasoning are in
   [`CLAUDE.md`](./CLAUDE.md), "Timeouts and function limits".
