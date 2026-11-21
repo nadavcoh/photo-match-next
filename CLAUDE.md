@@ -65,8 +65,8 @@ src/app/api/match/skip/route.ts     ← POST: mark wa.processed = true
 src/app/api/match/undo/route.ts     ← POST: revert last commit/skip
 src/app/api/skipped/route.ts        ← GET ?offset=&limit=: skipped wa items (processed = true,
                                  id_hash null), timestamp desc / id asc, with presigned e2
-                                 thumbnail URLs and the exact total. Skip and a "no match"
-                                 commit leave the same state, so they can't be told apart.
+                                 thumbnail URLs and the exact total. Only the Skip button
+                                 produces this state in the UI (see "Known dead/legacy bits").
 src/app/skipped/page.tsx      ← The /skipped screen (linked from the ⏭️ button in the main
                                  header): thumbnail grid, "Load more", detail sheet with
                                  WAMediaPreview, "Back to queue" = POST /api/match/undo with
@@ -377,6 +377,10 @@ number in the output means — are in `scripts/thumbnails_to_e2/README.md`.
 
 ## Known dead/legacy bits worth knowing about
 
+- `POST /api/match/commit` with no `hash_id` (marks the item processed, same state as
+  `/api/match/skip`) is not called by the UI: `doCommit` in `page.tsx` refuses to run
+  without a selected or auto-selected candidate. Likely a leftover from the Flask app.
+  If it is ever used, its items will show up on `/skipped` like skipped ones.
 - `WAMediaPreviewProps.path` — explicitly marked unused in a comment
   ("the full relative path is encoded in filename itself"). Still passed
   in some callers maybe; harmless to leave, fine to remove if touching that
