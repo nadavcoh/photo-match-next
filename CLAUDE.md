@@ -778,10 +778,11 @@ Things to remember:
   single-user app. The migration was applied by the Supabase GitHub integration and the role
   showed `statement_timeout=30s` afterwards.
 - **Vercel.** The project is on the Hobby plan (the runtime-log API says so). `/api/match` and
-  `/api/warm` export `maxDuration = 60` since 2026-11-21; 60 s is the Hobby maximum without Fluid
-  Compute. `/api/warm` was 20 s before and hit that limit twice on 2026-11-17 while loading the
-  hash index. Whether Fluid Compute is on, and so what the default duration is for routes that
-  set none, could not be read through the Vercel API: check Project Settings → Functions.
+  `/api/warm` export `maxDuration = 60` since 2026-11-21; a cap well above the 30 s database timeout. `/api/warm` was 20 s before and hit that limit twice on 2026-11-17 while loading the
+  hash index. Fluid Compute is enabled and the project's Default Max Duration is 300 s (read from the
+  dashboard, Project Settings → Functions, on 2026-11-21), so routes that set none get 300 s and
+  the 60 s on these two is a lower cap. The Hobby plan limits functions to one region (`fra1`,
+  set in `vercel.json`).
   `WARM_BUDGET_MS` (4000) in `/api/warm` was chosen to stay under the old 8 s limit and is
   unchanged.
 - **What the logs showed (2026-11-14 to 2026-11-20, `get_runtime_errors`).** 12 error groups,
