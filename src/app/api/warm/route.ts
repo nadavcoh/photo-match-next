@@ -22,8 +22,9 @@ export const maxDuration = 60
 /**
  * Time budget handed to warm_match_index (4000 is also its own default). Tried 5500
  * on 2026-11-14: better median but a worse tail, and one warm-up ran 7.9 s, close to
- * the authenticated role's 8 s statement_timeout. The function only checks the
- * budget between searches, so it can overrun by one search; keep this well below 8 s.
+ * the authenticated role's statement_timeout (8 s when this was tuned; 30 s since
+ * 2026-11-21). The function only checks the budget between searches, so it can
+ * overrun by one search; 4 s is also what the measurements favoured.
  * n=2 (two parallel warm-ups) was also tried on 2026-11-14 and gave no gain.
  */
 const WARM_BUDGET_MS = 4000
