@@ -217,7 +217,10 @@ With `MATCH_ENGINE=memory` (see "In-memory matching" in [`CLAUDE.md`](./CLAUDE.m
 candidates come from an exact scan in the function's memory instead, so the modes
 don't apply: the response reports `exact` and the button is hidden. The modes
 matter whenever the database answers (the default engine, a fresh instance, any
-fallback).
+fallback). In production, `MATCH_ENGINE=compare` agreed with the database on every
+check that completed (351 of 351 between 2026-11-15 and 2026-11-22; 3 database
+checks timed out), and an in-memory search took about 0.1 s against several seconds
+on the database path (figures in `CLAUDE.md`, "In-memory matching").
 
 The measurements behind this, and the reasons for each design choice, are in
 [`CLAUDE.md`](./CLAUDE.md) under "HNSW recall and search modes".
