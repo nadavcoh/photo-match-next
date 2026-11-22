@@ -118,18 +118,19 @@ supabase-auth-setup.txt       ← optional extra trigger (not installed) restric
 supabase/config.toml          ← Standard `supabase init` output; makes the repo usable by
                                  the Supabase CLI / GitHub integration
 supabase/migrations/20261031120000_search_modes_for_match_functions.sql
-                               ← Same functions as above, as a migration for an existing
-                                 DB (generated from one source — keep the two in sync if
-                                 you edit either). Quick, safe on an empty DB.
-supabase/migrations/20261031120200_fix_match_function_return_types.sql
-                               ← Supersedes the function definitions in ...120000 (those
-                                 failed on every call — see "explicit casts" below).
-                                 Same text as supabase-rls-and-rpc.sql Part 4/5.
+                               ← The original p_mode (fast | wide | exact) functions.
+                                 BROKEN as shipped: they failed on every call (see
+                                 "explicit casts" below). Superseded by ...120200, then by
+                                 20261103120100. Left as applied; never edit.
 supabase/migrations/20261031120100_rebuild_hnsw_indexes.sql
                                ← (Re)builds the 4 HNSW indexes with m=32,
                                  ef_construction=200. Pure SQL, idempotent, skips
                                  tables that don't exist and indexes already done.
                                  SLOW on prod — run via psql first (see header).
+supabase/migrations/20261031120200_fix_match_function_return_types.sql
+                               ← Re-creates the functions with every output column cast
+                                 to its declared type (the fix for ...120000). Itself
+                                 superseded by 20261103120100, which keeps the casts.
 supabase/migrations/20261106120000_rebuild_big_hnsw_indexes.sql
                                ← Same idempotent function as ...120100, as a new migration:
                                  rebuilds the two big HNSW indexes dropped for the
@@ -584,9 +585,19 @@ next three (cause not established — don't read much into a single slow call).
   simplest option; the escalation design was chosen instead to keep `fast`
   quick for the common case. If maintaining it becomes a chore, switching the
   default to `exact` is a one-line change in `route.ts` (`parseMode`) plus
-  dropping the HNSW indexes.
+  dropping the HNSW indexes. Since then an in-memory exact scan has been added
+  (`MATCH_ENGINE=memory`, see "In-memory matching (MATCH_ENGINE)"): when it
+  answers, the modes are moot (it reports `exact` and the button is hidden); they
+  only apply when the database answers (engine not configured, fresh instance,
+  any fallback).
 
 **How it's wired — things not to "simplify".**
+- **Where the current text lives.** The functions as deployed are in
+  `supabase/migrations/20261103120100_match_functions_read_normalized_columns.sql`
+  (identical to `supabase-rls-and-rpc.sql` Part 4/5; they read the normalized
+  columns). Everything below — the modes, `set_config`, the casts, the `OFFSET 0`
+  fence — is unchanged in them. The earlier migrations (`…120000`, `…120200`) are
+  history.
 - The functions are `plpgsql`, not `sql`, so they can call
   `set_config('hnsw.ef_search', …, true)` (transaction-local, so it can't leak
   across pooled connections). Both `fast` and `wide` set it explicitly, so
@@ -637,7 +648,9 @@ next three (cause not established — don't read much into a single slow call).
   ~25–50%, after a bulk import, after any index rebuild or pgvector upgrade,
   after changing `HAMMING_THRESHOLD`, or when a known match goes missing.**
   Target: `wide_miss_q = 0`. If `wide` ever misses, raise the 400 (cap 1000)
-  in the SQL or make `exact` the default.
+  in the SQL or make `exact` the default. If `MATCH_ENGINE=memory` is the live
+  engine, HNSW recall only matters for the database fallback, so the re-test is
+  less urgent.
 - pgvector's iterative scans (`hnsw.iterative_scan`) were tried and rejected:
   `strict_order` still missed; `relaxed_order` found the matches but was no
   faster than `exact`.
@@ -670,6 +683,13 @@ next three (cause not established — don't read much into a single slow call).
 
 ## Working conventions for this project
 
+- **Migrations are applied by the Supabase GitHub integration**, which runs each
+  new file in `supabase/migrations/` when it lands on `master`. Don't run
+  migration SQL through the Supabase connector (owner preference): commit it and
+  let the integration apply it. A slow index rebuild may need a one-off `psql`
+  run first (see the HNSW section). Read-only and diagnostic queries (`EXPLAIN`,
+  `sql/stats/report.sql`, `sql/hnsw_recall_tests.sql`) are fine through the
+  connector.
 - Don't deliver changes as a `tar.gz` (owner preference, 2026-11-10); present
   files individually, or push when asked.
 - The git history of this repo was rewritten on 2026-11-17 (author e-mail addresses
