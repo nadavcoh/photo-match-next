@@ -874,6 +874,19 @@ Things to remember:
 - **Statistics.** `/api/match` log lines now carry `engine=db|memory` and `api_stats.engine`
   records it per request, so the two can be compared (`sql/stats/report.sql`; the daily rollup
   does not split by engine, use the raw rows, kept 30 days).
+- **Production results so far (checked 2026-11-22, from `api_compare` and `api_stats`).** Since
+  `MATCH_ENGINE=compare` went on (2026-11-15 13:10 UTC) there are 354 verdicts: 351 `match`
+  (321 image, 30 video), 0 `mismatch` and 3 `error`. The 3 errors are all from 2026-11-19 16:54 UTC
+  (wa ids 14280 and 14281): the database side of the check, `match_hashes_image` in `exact` mode,
+  hit the statement timeout, so there was nothing to compare; they are not disagreements. No compare
+  returned more than 8 `hashes` / `partner` rows, so the 50-row cap, ties and the live delta
+  (rows added after the index was loaded) have still not been exercised in production, only in the
+  parity test. The latest verdict was 2026-11-22 06:19 UTC, so compare was still on then. `rpc`
+  time in the last 7 days: in-memory fast image p50 96 ms / p90 183 ms (n=320) and fast video p50
+  86 ms / p90 154 ms (n=28); database fast image p50 2.9 s / p90 5.5 s (n=70) and fast video p50
+  6.0 s / p90 11.8 s (n=6), where the database rows include fresh-instance fallbacks and cold
+  connections. 4 `/api/match` requests failed in total, all in `wide` mode (3 on 2026-11-14, 1 on
+  2026-11-20); failed rows do not record the engine.
 - **Parity test.** `scripts/hash_index_parity/` runs the engine against the real SQL functions
   on a local Postgres 16 with pgvector 0.8 (synthetic clustered hashes, 4,000 checks over image
   and video searches in both tables, multi-chunk loading and the delta update). Result on
