@@ -1,3 +1,8 @@
+> **Historical note.** This file describes a one-off tar archive of the Cloudinary →
+> Backblaze B2 change (October 2026). Tar archives are no longer used to deliver changes:
+> they are pushed to GitHub, and the history is in `git log` and the dated sections of
+> `CLAUDE.md`. Kept for reference only.
+
 # Changes in this archive — photo-match-next
 
 Cloudinary → Backblaze B2 migration + CLAUDE.md/README.md.

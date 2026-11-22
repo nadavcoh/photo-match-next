@@ -248,6 +248,33 @@ without an error. (It's plain SQL — works in the SQL editor or `psql`.)
   of the database. The evidence and the reasoning are in
   [`CLAUDE.md`](./CLAUDE.md), "Timeouts and function limits".
 
+## Performance: warm-up, in-memory matching and statistics
+
+- **Warm-up.** On the Free plan's Nano compute a fresh database connection is slow for
+  its first searches (1 to 2 s each) and speeds up after a few dozen. The page pings
+  `/api/warm?n=1` every 15 s while it is visible (`src/app/WarmUp.tsx`), never while a
+  `/api/match` request is in flight, with a 4 s budget. Trying `n=2` and a 5.5 s budget
+  gave no robust gain (numbers in `CLAUDE.md`, "Warm-up and long-term statistics").
+- **In-memory matching.** `MATCH_ENGINE=memory` keeps the 64-bit hashes of `hashes` and
+  `partner` (about 240,000 rows, ~5 MB) in the function's memory and finds candidates
+  with an exact Hamming scan (about 1.5 ms); only the matching rows' display columns
+  come from the database. `compare` answers the same way and checks it against the
+  database in `exact` mode after each response. `?engine=db|memory|compare` on
+  `/api/match` overrides the variable for one request. A fresh function instance answers
+  from the database until its index has loaded, and any problem falls back to the
+  database. The page shows which engine answered and why ("⚡ memory · exact" or
+  "🗄 database", with the reason beside it) and hides **Search wider** only when memory
+  answered. `scripts/hash_index_parity/` tests the engine against the real SQL
+  functions on a local Postgres (4,007 checks, 0 failures). Design and upkeep rules:
+  `CLAUDE.md`, "In-memory matching (MATCH_ENGINE)".
+- **Statistics.** Vercel Hobby keeps about an hour of logs, so every `/api/match` and
+  `/api/warm` request also writes one row to `api_stats` after the response (timings
+  per phase, mode, engine, candidate counts), and each `compare` check writes one row to
+  `api_compare` (`match` / `mismatch` / `error`). Raw rows are kept 30 days (warm pings
+  7), a daily rollup (`api_stats_daily`) is kept for good, and `compact_api_stats()`
+  does the rollup and cleanup (called now and then from `/api/warm`). Example queries:
+  `sql/stats/report.sql`.
+
 ## Project structure
 
 See [`CLAUDE.md`](./CLAUDE.md) for a full architecture map, the auth model,
@@ -273,6 +300,10 @@ npx next build
 to be set; placeholder values are enough to check that the build compiles.
 
 Database-side checks live in `sql/` — see "Checking recall" above.
+
+`scripts/hash_index_parity/` is a parity test for the in-memory engine; it needs a local
+Postgres with pgvector and `npm install --no-save pg tsx` (neither is a project
+dependency), see its README. It is excluded from `tsconfig.json`.
 
 One-time migration scripts (Supabase Storage → IDrive e2: backfill, verify,
 cleanup, orphan lookup, `VACUUM FULL`) live in `scripts/thumbnails_to_e2/` and
