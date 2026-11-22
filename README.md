@@ -93,9 +93,9 @@ set the Supabase directory to `supabase` and the production branch to
 
 | Migration | Notes |
 |---|---|
-| `20261031120000_search_modes_for_match_functions.sql` | Replaces the four `match_*` functions with the `p_mode` versions. Quick; safe anywhere, including an empty database. |
+| `20261031120000_search_modes_for_match_functions.sql` | The original `p_mode` versions of the four `match_*` functions. **Broken as shipped** (every call failed on a column-type mismatch); superseded by `20261031120200`, then by `20261103120100`. Quick; safe anywhere. |
 | `20261031120100_rebuild_hnsw_indexes.sql` | Rebuilds the four HNSW indexes with `m = 32, ef_construction = 200`. **Slow and write-blocking on a populated database.** |
-| `20261031120200_fix_match_function_return_types.sql` | Fixes the first migration's functions, which failed on every call (a column-type mismatch, e.g. `duration` is `double precision`). Supersedes their definitions. Quick. |
+| `20261031120200_fix_match_function_return_types.sql` | Fixes the first migration's functions, which failed on every call (a column-type mismatch, e.g. `duration` is `double precision`). Supersedes their definitions (itself superseded by `20261103120100`, which keeps the casts). Quick. |
 | `20261103120000_normalize_columns_expand.sql` | Adds the normalized columns (`photo_id`, `lat`/`lon`, `width`/`height`, `*_id`, `quant_profile_id`) and the lookup tables with their RLS policies. Additive; the old columns keep working. See [Normalized columns](#normalized-columns). |
 | `20261103120100_match_functions_read_normalized_columns.sql` | Rewrites the four `match_*` functions to read the normalized columns (and drops the legacy `filesize` output). |
 | `20261106120000_rebuild_big_hnsw_indexes.sql` | Same idempotent function as `...120100`: rebuilds the two big HNSW indexes (`hashes`, `partner`) that were dropped during the normalization, skipping the ones already on `m = 32`. **Slow and write-blocking.** |
@@ -108,17 +108,21 @@ set the Supabase directory to `supabase` and the production branch to
 | `20261117130000_restrict_signup_by_github_id.sql` | `public.restrict_signup` (Auth "Before User Created" hook) now lets a sign-up through only for GitHub user id `29537286`. Quick. |
 | `20261121120000_raise_authenticated_statement_timeout.sql` | Raises the `authenticated` role's `statement_timeout` from 8 s to 30 s (and reloads PostgREST's config), so slow `match_*` / `export_hash_index` calls can finish. Quick. See [Timeouts and limits](#timeouts-and-limits). |
 
-**Before the integration first applies these to production**, run the second
-one by hand so it has nothing left to build (the integration then just
-records it):
+**Slow migrations.** An HNSW index rebuild on a populated database outlasts the
+SQL editor's timeout, runs as one file under the integration, and blocks writes to
+its table while it builds. For those (`20261031120100`, `20261106120000`), run the
+file once by hand from `psql` before pushing it, so the integration finds nothing
+left to build and just records it:
 
 ```bash
 psql "<direct connection string, port 5432>" \
-  -f supabase/migrations/20261031120100_rebuild_hnsw_indexes.sql
+  -f supabase/migrations/<the slow migration>.sql
 ```
 
 Pushing to the production branch is what triggers the integration to apply
-pending migrations, so do this first. Things to know:
+pending migrations, so do this first. Every other file in `supabase/migrations/`
+is applied by the integration alone; don't run migration SQL through the Supabase
+connector. Things to know:
 
 - The app tables (`wa`, `hashes`, `partner`) are not created by any migration,
   so a **preview branch** starts without them. The October migrations succeed
@@ -209,6 +213,12 @@ so stepping back to an item you just escalated shows it as you left it.
 The costs above are for a warm database connection; a fresh connection is much
 slower on its first searches (see "Warm-up" in [`CLAUDE.md`](./CLAUDE.md)).
 
+With `MATCH_ENGINE=memory` (see "In-memory matching" in [`CLAUDE.md`](./CLAUDE.md))
+candidates come from an exact scan in the function's memory instead, so the modes
+don't apply: the response reports `exact` and the button is hidden. The modes
+matter whenever the database answers (the default engine, a fresh instance, any
+fallback).
+
 The measurements behind this, and the reasons for each design choice, are in
 [`CLAUDE.md`](./CLAUDE.md) under "HNSW recall and search modes".
 
@@ -217,8 +227,9 @@ The measurements behind this, and the reasons for each design choice, are in
 `sql/hnsw_recall_tests.sql` compares `fast` and `wide` against `exact` on real
 items from `wa`. Re-run it when the data has grown by a third or more, after a
 bulk import, after rebuilding an index or upgrading pgvector, or whenever a
-match you know exists isn't offered. (It's plain SQL — works in the SQL editor
-or `psql`.)
+match you know exists isn't offered. After any change to the `match_*` functions,
+also run Part 4d: it calls every function in every mode and must return 12 rows
+without an error. (It's plain SQL — works in the SQL editor or `psql`.)
 
 ## Timeouts and limits
 
