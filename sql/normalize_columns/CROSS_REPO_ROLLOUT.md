@@ -1,8 +1,9 @@
 # Column normalization — changes for three repos
 
-> **Status (2026-11-06): every step below has been carried out, except installing
-> the webos build on the TV** (the code is on `main`; its deploy run failed because
-> the TV was unreachable and still needs a re-run). These are the
+> **Status (2026-11-23): every step below has been carried out.** The webos build
+> was installed on the TV on 2026-11-08 (the first deploy run, on 2026-11-06,
+> failed because the TV was unreachable) and the check that a photo with a
+> location shows it passed on 2026-11-09. These are the
 > original hand-off notes (2026-11-03) for rolling the column normalization out
 > across `photo-match-next`, `webos-local-slideshow` and the private `phash`
 > repo; kept for context. The tarball they mention is not in this repo, and the

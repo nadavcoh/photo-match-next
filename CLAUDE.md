@@ -733,7 +733,7 @@ exists in the RPC output, types or UI.
 | `filesize` (text) | merged into `filesize_bytes` | — |
 
 Things to remember:
-- **Current state (updated 2026-11-09).** The column normalization is finished on the
+- **Current state (updated 2026-11-23).** The column normalization is finished on the
   live DB (runbook steps 0–6): the old columns are dropped (contract), both
   tables were `VACUUM FULL`ed, and the two big HNSW indexes were rebuilt by
   migration `20261106120000_rebuild_big_hnsw_indexes.sql` (m = 32,
@@ -743,7 +743,9 @@ Things to remember:
   (`storage.objects`: 253k rows, 226 MB including indexes, 898 MB of files):
   the move to IDrive e2 is done as of 2026-11-08 (see "Thumbnails: IDrive
   e2"), and the Supabase copy was deleted and vacuumed on 2026-11-17: the
-  database is now 183 MB (from 399 MB).
+  database is now 183 MB (from 399 MB; re-checked read-only on 2026-11-23: 184 MB,
+  `storage.objects` 0 rows / 88 kB, no Storage buckets and no `storage.objects`
+  policies left on the project).
   After the rebuild,
   Part 1 of `sql/hnsw_recall_tests.sql` showed zero misses for `fast` and
   `wide` against `exact` in all four tests (200 samples each); Parts 2–3 were
