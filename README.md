@@ -254,7 +254,9 @@ without an error. (It's plain SQL — works in the SQL editor or `psql`.)
   its first searches (1 to 2 s each) and speeds up after a few dozen. The page pings
   `/api/warm?n=1` every 15 s while it is visible (`src/app/WarmUp.tsx`), never while a
   `/api/match` request is in flight, with a 4 s budget. Trying `n=2` and a 5.5 s budget
-  gave no robust gain (numbers in `CLAUDE.md`, "Warm-up and long-term statistics").
+  gave no robust gain (numbers in `CLAUDE.md`, "Warm-up and long-term statistics"). `pg_prewarm` does not help
+  either (the cold cost belongs to the connection, not to shared buffers), and the compute size can only be
+  changed on a paid plan.
 - **In-memory matching.** `MATCH_ENGINE=memory` keeps the 64-bit hashes of `hashes` and
   `partner` (about 240,000 rows, ~5 MB) in the function's memory and finds candidates
   with an exact Hamming scan (about 1.5 ms); only the matching rows' display columns
