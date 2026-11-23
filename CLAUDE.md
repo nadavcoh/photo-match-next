@@ -782,6 +782,27 @@ Things to remember:
   unproven (per-connection cold cost; the API layer probably closes idle
   connections after a while). In-memory matching is the alternative if this is
   not enough.
+- **Diagnostics behind the warm-up (2026-11-13).** Before it, 27 `/api/match`
+  requests (all `fra1`) had a median total of 1.6 s for a fast image search (p90
+  3.4 s), with the `match_*` RPC at a median 1.2 s (73 ms to 2.8 s) and about 80%
+  of the time; videos took 3.4 to 7.6 s, wide 5.4 and 6.0 s, exact 1.9 and 2.4 s.
+  The e2 download had a median of 156 ms; every other phase stayed under 0.2 s.
+  `EXPLAIN (ANALYZE, BUFFERS)` of the fast image search on `hashes`, through the
+  Supabase connector, always showed the right plan (HNSW index scan, `ef_search`
+  40, all buffers hits, no reads). A hash the connection had not searched before
+  took 1.7 to 2.1 s; the identical query again 4 to 5 ms; a one-bit-different hash
+  in a separate call was slow again (1.8 s), but inside one session it took 1.9 ms,
+  and 60 random searches in one session went from about 970 ms to about 25 ms by
+  roughly the 45th. So the cost belongs to the connection, not to the query or to
+  shared-buffer contents. `pg_prewarm` on both big HNSW indexes (8,874 and 5,162
+  blocks) did not help (a new hash still took 1.9 s) and was removed again;
+  `pageinspect` cannot be installed (needs superuser). Likely cause, unproven: the
+  first-touch cost of a new backend on Nano compute (about 0.5 GB RAM,
+  `shared_buffers` about 224 MB). The compute size cannot be changed on the Free
+  plan (Pro is needed). With the first warm-up (3 parallel pings, every 25 s) image
+  RPCs had a median of 485 ms, but the pings starved when they ran alongside the
+  2 to 3 prefetched searches, hence the current n=1, 15 s, skip-while-in-flight
+  design.
 - **Long-term statistics.** Vercel Hobby keeps about 1 h of logs, so
   `/api/match` and `/api/warm` each write one row to `public.api_stats` after the
   response is sent (`after()` in the route; `src/lib/stats.ts`; failures are only
