@@ -28,3 +28,7 @@ inserts have no `photo_id`; re-run step 2 (idempotent) before step 4. After step
 Not part of this runbook: the thumbnails in Storage (`storage.objects` was the
 biggest table). They were moved to IDrive e2 separately (see
 `scripts/thumbnails_to_e2/`), and Storage was emptied and vacuumed on 2026-11-17.
+
+Historical hand-off notes for rolling the column change out across the three
+repos (`photo-match-next`, `webos-local-slideshow`, the private `phash`) are in
+[`CROSS_REPO_ROLLOUT.md`](./CROSS_REPO_ROLLOUT.md).
