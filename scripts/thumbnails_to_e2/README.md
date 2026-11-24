@@ -12,6 +12,14 @@ Supabase Storage, so these scripts are kept only as a record.
 
 Key layout is unchanged: `{prefix}/{chunk:06d}/{prefix}_{id}.jpg`.
 
+## Files
+
+- `backfill.py`: copy Storage objects to e2 and verify them (also the delta pass and the orphan download).
+- `cleanup.py`: delete the old objects from Supabase Storage (no way back).
+- `orphan_lookup.py`: read-only; hashes downloaded orphans and looks them up in `hashes` / `partner`.
+- `common.py`: shared helpers (config loading from `--config` JSON with environment overrides, DB / Storage / e2 clients). Never prints a secret.
+- `requirements.txt`: Python dependencies.
+
 ## Setup (once)
 
 ```bash
