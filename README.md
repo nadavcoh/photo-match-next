@@ -136,6 +136,11 @@ connector. Things to know:
   for local development and branches.
 - The app works with the migrations applied before or after it deploys: it
   only sends `p_mode` when you press the escalate button.
+- Before running DDL by hand on `hashes` or `partner` (an index drop or rebuild,
+  `ALTER`, `VACUUM FULL`), check `pg_stat_activity` for sessions stuck
+  `idle in transaction`: a leftover scraper connection holds a lock that makes the
+  statement wait until it times out. The query is in [`CLAUDE.md`](./CLAUDE.md),
+  "Normalized columns".
 
 ## Normalized columns
 
