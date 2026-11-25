@@ -713,6 +713,13 @@ next three (cause not established — don't read much into a single slow call).
   (Vercel MCP or dashboard) are the first place to look afterwards. Hobby keeps
   only 1 hour of them. `/api/match/queue` logs nothing, so check it through the
   page or the request log rather than the function logs.
+- **Commit a shared-type change together with every file that uses it.** `next build`
+  type-checks on every push, so a commit that changes `src/lib/types.ts` or an API
+  response shape without the components that read it fails its Vercel build. This
+  happened once during the column normalization (types and route in one commit,
+  `page.tsx` in the next): production stayed on the previous deployment, but it is
+  avoidable. When a rollout is split over several commits, each one must still
+  type-check.
 - Keep the inline-style, single-file-component conventions already in
   `page.tsx` unless explicitly asked to refactor.
 
@@ -770,6 +777,21 @@ Things to remember:
   HNSW indexes. Updating every row without dropping them first is slow
   (≈3 ms/row per HNSW index on a 15k-row copy). See
   `sql/normalize_columns/README.md` for the procedure that was used.
+- **Look for stuck sessions before DDL on `hashes`/`partner`.** `DROP INDEX`,
+  `ALTER TABLE` and `VACUUM FULL` need an exclusive lock, and a scraper connection
+  sitting `idle in transaction` (it only ran a SELECT but never committed or rolled
+  back) holds a share lock that blocks them until the statement timeout (about
+  2 minutes through the Supabase connector). During the normalization an index drop
+  timed out for this reason until four such sessions, some of them days old, were
+  terminated. Check first:
+  `select pid, state, now() - xact_start as age, left(query, 60) from pg_stat_activity where state like 'idle in transaction%';`
+  The scrapers were fixed afterwards (phash `CLAUDE.md`, "Idle-in-transaction
+  connections"), but crashed or older clients can still leave such sessions.
+- **Postgres regex gotcha: `\b` is a backspace, not a word boundary; use `\y`.** The
+  first draft of the file-size parser used `\b`, matched nothing, and was caught
+  only because the backfill's verification block (every old value must be
+  reconstructible from the new columns) refused to pass. Keep such a check in any
+  future backfill.
 
 ## Warm-up and long-term statistics
 
