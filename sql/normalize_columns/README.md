@@ -9,6 +9,24 @@ except `filesize` (removed) and `filesize_bytes` (back-filled).
 
 Use a **direct** connection (not the pooler) for the psql steps.
 
+**Status: finished** on the live database (contract and `VACUUM FULL` on 2026-11-06).
+This file is kept as the record of the procedure, for the next column change that
+needs the same expand → backfill → contract shape.
+
+Two things that bit during the rollout:
+
+- **Stuck sessions block the DDL.** `DROP INDEX` (step 0), the contract (step 4) and
+  `VACUUM FULL` (step 5) wait for an exclusive lock, and a scraper connection left
+  `idle in transaction` holds a share lock on `hashes`/`partner`, so the statement
+  ran into the statement timeout. Check first:
+  `select pid, state, now() - xact_start as age, left(query, 60) from pg_stat_activity where state like 'idle in transaction%';`
+  and terminate (or close) what shows up. The scrapers were fixed later (phash
+  `CLAUDE.md`).
+- **`\b` is a backspace in Postgres regexes, not a word boundary; use `\y`.** The
+  first file-size parser used `\b` and silently parsed nothing; the verification
+  block at the end of `1_backfill.sql` is what caught it. Keep a check like that in
+  any similar backfill.
+
 | # | What | How | Reversible? |
 |---|------|-----|-------------|
 | 0 | Drop the two big HNSW indexes (recommended; makes step 2 seconds instead of ~15-20 min) | `psql -f sql/normalize_columns/0_drop_big_hnsw_indexes.sql` | yes — rebuilt in step 6 |
